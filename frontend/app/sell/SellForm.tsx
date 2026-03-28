@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
 export function SellForm() {
   const router = useRouter();
   const { address, signTx } = useWallet();
-  const [policyId,     setPolicyId]     = useState("");
+  const POLICY_ID = process.env.NEXT_PUBLIC_DEMO_POLICY_ID ?? "";
   const [assetName,    setAssetName]    = useState("");
   const [quantity,     setQuantity]     = useState("");
   const [unitPrice,    setUnitPrice]    = useState("");
@@ -27,7 +27,7 @@ export function SellForm() {
     if (!qty || qty <= 0 || !unit || unit <= 0) { setError("Ingresá cantidad y precio por unidad"); return; }
     const pl = Math.round(qty * unit * 1_000_000);
     if (isNaN(pl) || pl < 2_000_000) { setError("El total mínimo es 2 ADA"); return; }
-    if (!policyId || !assetName) { setError("Todos los campos son obligatorios"); return; }
+    if (!assetName) { setError("Ingresá el nombre del cultivo"); return; }
     // Convertir nombre del cultivo a hex UTF-8
     const assetNameHex = Array.from(new TextEncoder().encode(assetName.trim()))
       .map((b) => b.toString(16).padStart(2, "0"))
@@ -36,7 +36,7 @@ export function SellForm() {
     try {
       const result = await api.createListing({
         requestId: newRequestId(), sellerAddress: address,
-        policyId: policyId.trim(), assetName: assetNameHex,
+        policyId: POLICY_ID, assetName: assetNameHex,
         priceLovelace: String(pl),
       });
       setListingId(result.listingId);
@@ -97,12 +97,6 @@ export function SellForm() {
         <input type="text" value={assetName} onChange={(e) => setAssetName(e.target.value)}
           placeholder="Ej: Arroz, Soja, Maíz"
           className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none" />
-      </div>
-      <div>
-        <label className="block text-sm text-gray-400 mb-1">ID del token (Policy ID)</label>
-        <input type="text" value={policyId} onChange={(e) => setPolicyId(e.target.value)} placeholder="aabbccddeeff…"
-          className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-mono text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none" />
-        <p className="mt-1 text-xs text-gray-600">ID único del token en la blockchain (56 caracteres)</p>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
