@@ -598,6 +598,30 @@ cd contracts && aiken build
 
 ---
 
+## 15. Post-Launch Changes (2026-03-28)
+
+### Farmer-friendly sell form
+
+The sell form (`frontend/app/sell/SellForm.tsx`) was updated to remove all hex fields from the user interface:
+
+**Before:**
+- Policy ID (hex, 56 chars)
+- Asset Name (hex)
+- Price (ADA)
+
+**After:**
+- Nombre del cultivo (plain text — e.g. "Arroz", "Soja", "Maíz")
+- ID del token (Policy ID — still required, labeled in plain language)
+- Precio (ADA)
+
+The asset name is converted to UTF-8 hex internally before being sent to the backend. The farmer never sees hex.
+
+### Migration fix (002_production_indexes.sql)
+
+The `tx_submissions_pending` index was referencing `created_at` which does not exist on `tx_submissions` (the column is `submitted_at`). Fixed the migration.
+
+---
+
 ## 14. Quick-Start Checklist (re-opening the project)
 
 ```

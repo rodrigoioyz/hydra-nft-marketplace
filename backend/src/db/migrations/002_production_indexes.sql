@@ -11,5 +11,5 @@ CREATE INDEX IF NOT EXISTS listings_active
 
 -- Index for pending tx_submissions (polled by sync workers)
 CREATE INDEX IF NOT EXISTS tx_submissions_pending
-  ON tx_submissions (created_at ASC)
+  ON tx_submissions (submitted_at ASC)
   WHERE status = 'pending';
