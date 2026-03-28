@@ -3,6 +3,7 @@ import { createListingsRouter } from "./listings";
 import { createHeadRouter } from "./head";
 import { createAdminRouter } from "./admin";
 import { createHealthRouter } from "./health";
+import { createEventsRouter } from "./events";
 import { errorHandler, apiError, requestLogger } from "./middleware";
 import { config } from "../config";
 import type { Pool } from "pg";
@@ -24,6 +25,7 @@ export function createApp(pool: Pool, hydra: HydraClient): express.Application {
 
   const api = Router();
   api.use("/health",   createHealthRouter(pool, hydra));
+  api.use("/events",   createEventsRouter(hydra));
   api.use("/listings", createListingsRouter(pool, hydra));
   api.use("/head",     createHeadRouter(pool, hydra));
   api.use("/admin",    adminAuth, createAdminRouter(pool, hydra));
