@@ -20,15 +20,19 @@ export function SellForm() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault(); setError(null);
-    if (!address) { setError("Connect your wallet first"); return; }
+    if (!address) { setError("Conectá tu billetera primero"); return; }
     const pl = Math.round(parseFloat(priceAda) * 1_000_000);
-    if (isNaN(pl) || pl < 2_000_000) { setError("Price must be at least 2 ADA"); return; }
-    if (!policyId || !assetName) { setError("All fields are required"); return; }
+    if (isNaN(pl) || pl < 2_000_000) { setError("El precio mínimo es 2 ADA"); return; }
+    if (!policyId || !assetName) { setError("Todos los campos son obligatorios"); return; }
+    // Convertir nombre del cultivo a hex UTF-8
+    const assetNameHex = Array.from(new TextEncoder().encode(assetName.trim()))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
     setLoading(true);
     try {
       const result = await api.createListing({
         requestId: newRequestId(), sellerAddress: address,
-        policyId: policyId.trim(), assetName: assetName.trim(),
+        policyId: policyId.trim(), assetName: assetNameHex,
         priceLovelace: String(pl),
       });
       setListingId(result.listingId);
@@ -76,35 +80,37 @@ export function SellForm() {
     <form onSubmit={handleCreate} className="rounded-xl border border-gray-800 bg-gray-900 p-6 space-y-4">
       {!address && (
         <div className="rounded-lg border border-yellow-800 bg-yellow-950 p-3 text-sm text-yellow-300">
-          ⚠ Connect your wallet (navbar) before listing an NFT.
+          ⚠ Conectá tu billetera (arriba a la derecha) antes de publicar.
         </div>
       )}
       <div>
-        <label className="block text-sm text-gray-400 mb-1">Your Cardano address</label>
-        <input type="text" readOnly value={address ?? ""} placeholder="Connect wallet…"
+        <label className="block text-sm text-gray-400 mb-1">Tu dirección</label>
+        <input type="text" readOnly value={address ?? ""} placeholder="Conectá tu billetera…"
           className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-400 font-mono placeholder-gray-600 focus:outline-none" />
       </div>
       <div>
-        <label className="block text-sm text-gray-400 mb-1">Policy ID (hex, 56 chars)</label>
+        <label className="block text-sm text-gray-400 mb-1">Nombre del cultivo</label>
+        <input type="text" value={assetName} onChange={(e) => setAssetName(e.target.value)}
+          placeholder="Ej: Arroz, Soja, Maíz"
+          className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none" />
+      </div>
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">ID del token (Policy ID)</label>
         <input type="text" value={policyId} onChange={(e) => setPolicyId(e.target.value)} placeholder="aabbccddeeff…"
           className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-mono text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none" />
+        <p className="mt-1 text-xs text-gray-600">ID único del token en la blockchain (56 caracteres)</p>
       </div>
       <div>
-        <label className="block text-sm text-gray-400 mb-1">Asset Name (hex)</label>
-        <input type="text" value={assetName} onChange={(e) => setAssetName(e.target.value)} placeholder="4e4654…"
-          className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-mono text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none" />
-      </div>
-      <div>
-        <label className="block text-sm text-gray-400 mb-1">Price (ADA)</label>
+        <label className="block text-sm text-gray-400 mb-1">Precio (ADA)</label>
         <input type="number" value={priceAda} onChange={(e) => setPriceAda(e.target.value)}
           placeholder="10" min="2" step="0.5"
           className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none" />
-        <p className="mt-1 text-xs text-gray-600">Minimum 2 ADA</p>
+        <p className="mt-1 text-xs text-gray-600">Mínimo 2 ADA</p>
       </div>
       {error && <p className="text-sm text-red-400">{error}</p>}
       <button type="submit" disabled={loading || !address}
         className="w-full rounded-lg bg-hydra-600 py-3 text-sm font-semibold text-white hover:bg-hydra-500 disabled:opacity-50">
-        {loading ? "Creating…" : "Create Listing"}
+        {loading ? "Creando…" : "Publicar"}
       </button>
     </form>
   );
