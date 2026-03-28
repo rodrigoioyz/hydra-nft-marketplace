@@ -602,23 +602,31 @@ cd contracts && aiken build
 
 ### Farmer-friendly sell form
 
-The sell form (`frontend/app/sell/SellForm.tsx`) was updated to remove all hex fields from the user interface:
+The sell form (`frontend/app/sell/SellForm.tsx`) was redesigned so farmers never interact with blockchain-specific fields.
 
-**Before:**
-- Policy ID (hex, 56 chars)
-- Asset Name (hex)
-- Price (ADA)
+**Before (3 technical fields):**
+- Policy ID (hex, 56 chars) — required manual input
+- Asset Name (hex) — required hex encoding knowledge
+- Price (ADA) — single flat price
 
-**After:**
-- Nombre del cultivo (plain text — e.g. "Arroz", "Soja", "Maíz")
-- ID del token (Policy ID — still required, labeled in plain language)
-- Precio (ADA)
+**After (3 plain fields):**
+- **Nombre del cultivo** — plain text (e.g. "Arroz", "Soja", "Maíz")
+- **Cantidad** — number of units
+- **Precio por unidad (ADA)** — price per unit; total shown automatically
 
-The asset name is converted to UTF-8 hex internally before being sent to the backend. The farmer never sees hex.
+**What happens behind the scenes:**
+- Asset name is UTF-8 hex-encoded automatically (`"Arroz"` → `"4172726f7a"`)
+- Policy ID is read from `NEXT_PUBLIC_DEMO_POLICY_ID` in `frontend/.env.local` — the operator sets it once, the farmer never sees it
+- Total `priceLovelace` = `cantidad × precioUnidad × 1_000_000`
+
+**`frontend/.env.local` (not committed — operator sets locally):**
+```
+NEXT_PUBLIC_DEMO_POLICY_ID=8f6e69350f02a04688c6e82fe3e7aebcded7be4ecd0246e727ad3ebc
+```
 
 ### Migration fix (002_production_indexes.sql)
 
-The `tx_submissions_pending` index was referencing `created_at` which does not exist on `tx_submissions` (the column is `submitted_at`). Fixed the migration.
+The `tx_submissions_pending` index referenced `created_at` which does not exist on `tx_submissions` (correct column is `submitted_at`). Fixed before first successful backend startup.
 
 ---
 
