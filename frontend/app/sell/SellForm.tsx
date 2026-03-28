@@ -11,7 +11,7 @@ export function SellForm() {
   const POLICY_ID = process.env.NEXT_PUBLIC_DEMO_POLICY_ID ?? "";
   const [assetName,    setAssetName]    = useState("");
   const [quantity,     setQuantity]     = useState("");
-  const [unitPrice,    setUnitPrice]    = useState("");
+  const [priceAda,     setPriceAda]     = useState("");
   const [listingId,    setListingId]    = useState<string | null>(null);
   const [escrowTxCbor, setEscrowTxCbor] = useState("");
   const [txId,         setTxId]         = useState("");
@@ -23,10 +23,9 @@ export function SellForm() {
     e.preventDefault(); setError(null);
     if (!address) { setError("Conectá tu billetera primero"); return; }
     const qty = parseFloat(quantity);
-    const unit = parseFloat(unitPrice);
-    if (!qty || qty <= 0 || !unit || unit <= 0) { setError("Ingresá cantidad y precio por unidad"); return; }
-    const pl = Math.round(qty * unit * 1_000_000);
-    if (isNaN(pl) || pl < 2_000_000) { setError("El total mínimo es 2 ADA"); return; }
+    if (!qty || qty <= 0) { setError("Ingresá la cantidad"); return; }
+    const pl = Math.round(parseFloat(priceAda) * 1_000_000);
+    if (isNaN(pl) || pl < 2_000_000) { setError("El precio mínimo es 2 ADA"); return; }
     if (!assetName) { setError("Ingresá el nombre del cultivo"); return; }
     // Convertir nombre del cultivo a hex UTF-8
     const assetNameHex = Array.from(new TextEncoder().encode(assetName.trim()))
@@ -100,25 +99,20 @@ export function SellForm() {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-sm text-gray-400 mb-1">Cantidad</label>
+          <label className="block text-sm text-gray-400 mb-1">Cantidad (unidades)</label>
           <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)}
-            placeholder="Ej: 100" min="1" step="1"
+            placeholder="Ej: 1000" min="1" step="1"
             className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none" />
+          <p className="mt-1 text-xs text-gray-600">Cuántas unidades representa este token</p>
         </div>
         <div>
-          <label className="block text-sm text-gray-400 mb-1">Precio por unidad (ADA)</label>
-          <input type="number" value={unitPrice} onChange={(e) => setUnitPrice(e.target.value)}
-            placeholder="Ej: 5" min="0.01" step="0.01"
+          <label className="block text-sm text-gray-400 mb-1">Precio del lote (ADA)</label>
+          <input type="number" value={priceAda} onChange={(e) => setPriceAda(e.target.value)}
+            placeholder="Ej: 40" min="2" step="0.5"
             className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none" />
+          <p className="mt-1 text-xs text-gray-600">Lo que recibirás al vender</p>
         </div>
       </div>
-      {quantity && unitPrice && parseFloat(quantity) > 0 && parseFloat(unitPrice) > 0 && (
-        <p className="text-sm text-gray-400">
-          Total: <span className="text-white font-semibold">
-            {(parseFloat(quantity) * parseFloat(unitPrice)).toFixed(2)} ADA
-          </span>
-        </p>
-      )}
       {error && <p className="text-sm text-red-400">{error}</p>}
       <button type="submit" disabled={loading || !address}
         className="w-full rounded-lg bg-hydra-600 py-3 text-sm font-semibold text-white hover:bg-hydra-500 disabled:opacity-50">
