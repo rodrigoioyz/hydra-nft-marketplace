@@ -1,0 +1,16 @@
+name = "hydra-marketplace/listing"
+version = "0.1.0"
+compiler = "v1.1.19"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Listing validator for Hydra NFT Marketplace"
+
+[repository]
+user = "hydra-marketplace"
+project = "listing"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.0.0"
+source = "github"

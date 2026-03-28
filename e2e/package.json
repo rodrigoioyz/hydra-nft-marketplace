@@ -1,0 +1,14 @@
+{
+  "name": "hydra-marketplace-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "tsx test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

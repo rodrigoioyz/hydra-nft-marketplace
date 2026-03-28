@@ -1,0 +1,50 @@
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
+
+# ── Build outputs ─────────────────────────────────────────────────────────────
+dist/
+.next/
+out/
+build/
+
+# ── Environment files (NEVER commit real .env) ────────────────────────────────
+.env
+.env.local
+.env.*.local
+# Allow example files
+!.env.example
+
+# ── Cardano / Hydra keys — CRITICAL: never commit private keys ────────────────
+hydra/keys/*.skey
+hydra/keys/*.sk
+# Allow public keys and address (not sensitive)
+!hydra/keys/*.vkey
+!hydra/keys/*.vk
+!hydra/keys/*.addr
+
+# ── Hydra node runtime data ───────────────────────────────────────────────────
+hydra/data/
+hydra/logs/
+
+# ── Aiken build artifacts ─────────────────────────────────────────────────────
+contracts/build/
+contracts/docs/
+
+# ── TypeScript ────────────────────────────────────────────────────────────────
+*.tsbuildinfo
+
+# ── OS / Editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.tmp
+.cache/
