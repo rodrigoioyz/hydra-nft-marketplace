@@ -83,7 +83,7 @@ fn buyer_receives_nft(
         o.value,
         policy_id,
         asset_name,
-      ) == 1
+      ) >= 1
     },
   )
 }
@@ -108,7 +108,7 @@ fn nft_returned(
         o.value,
         policy_id,
         asset_name,
-      ) == 1
+      ) >= 1
     },
   )
 }
@@ -275,7 +275,7 @@ test buy_nft_quantity_zero() fail {
   buyer_receives_nft(outputs, buyer_vkh, policy, nft_name)
 }
 
-test buy_nft_quantity_two() fail {
+test buy_nft_quantity_two() {
   let two_val =
     assets.add(assets.from_lovelace(2_000_000), policy, nft_name, 2)
   let two_nft =

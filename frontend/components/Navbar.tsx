@@ -13,11 +13,17 @@ export function Navbar() {
           <Link href="/" className="text-sm text-gray-300 hover:text-white">
             Browse
           </Link>
+          <Link href="/identity" className="text-sm text-gray-300 hover:text-white">
+            Identidad
+          </Link>
           <Link href="/sell" className="text-sm text-gray-300 hover:text-white">
-            Sell
+            Vender
           </Link>
           <Link href="/status" className="text-sm text-gray-300 hover:text-white">
             Status
+          </Link>
+          <Link href="/admin" className="text-sm text-gray-500 hover:text-gray-300">
+            Admin
           </Link>
           <HeadStatusBadge />
           <WalletConnect />

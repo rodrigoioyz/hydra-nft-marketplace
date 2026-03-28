@@ -1,16 +1,21 @@
 // Admin / observability endpoints
-// GET  /api/admin/events          — recent hydra_events (last 100)
-// GET  /api/admin/tx-submissions  — all tx_submissions (with filters)
-// POST /api/admin/head/close      — initiate Head close
-// POST /api/admin/head/fanout     — initiate fanout after contestation deadline
+// GET  /api/admin/events              — recent hydra_events (last 100)
+// GET  /api/admin/tx-submissions      — all tx_submissions (with filters)
+// POST /api/admin/head/close          — initiate Head close
+// POST /api/admin/head/fanout         — initiate fanout after contestation deadline
+// GET  /api/admin/farmers/pending     — list pending farmer registrations
+// POST /api/admin/farmers/:id/approve — approve + record FarmerPass tx hash
+// POST /api/admin/farmers/:id/reject  — reject with reason
 
 import { Router } from "express";
 import type { Pool } from "pg";
 import type { HydraClient } from "../hydra/client";
 import { asyncHandler, apiError } from "./middleware";
+import { FarmerRepo } from "../db/farmerRepo";
 
 export function createAdminRouter(pool: Pool, hydra: HydraClient): Router {
-  const router = Router();
+  const router     = Router();
+  const farmerRepo = new FarmerRepo(pool);
 
   // GET /api/admin/events?limit=100&tag=TxValid
   router.get(
@@ -127,6 +132,54 @@ export function createAdminRouter(pool: Pool, hydra: HydraClient): Router {
       });
     })
   );
+
+  // ── Farmer admin ───────────────────────────────────────────────────────────
+
+  // GET /api/admin/farmers/pending
+  router.get("/farmers/pending", asyncHandler(async (_req, res) => {
+    const rows = await farmerRepo.listByStatus("pending");
+    res.json(rows.map((r) => ({
+      id:           r.id,
+      walletAddress: r.wallet_address,
+      companyName:  r.company_name,
+      identityHash: r.identity_hash,
+      createdAt:    r.created_at,
+    })));
+  }));
+
+  // POST /api/admin/farmers/:id/approve
+  // Body: { reviewerAddress: string, farmerPassTxHash: string }
+  router.post("/farmers/:id/approve", asyncHandler(async (req, res) => {
+    const { reviewerAddress, farmerPassTxHash } = req.body ?? {};
+    if (!reviewerAddress || typeof reviewerAddress !== "string") {
+      return apiError(res, 400, "MISSING_FIELD", "reviewerAddress is required");
+    }
+    if (!farmerPassTxHash || typeof farmerPassTxHash !== "string") {
+      return apiError(res, 400, "MISSING_FIELD", "farmerPassTxHash is required");
+    }
+    const row = await farmerRepo.approve(req.params["id"] as string, reviewerAddress, farmerPassTxHash);
+    if (!row) {
+      return apiError(res, 404, "NOT_FOUND", "Registration not found or not in pending state");
+    }
+    res.json({ ok: true, walletAddress: row.wallet_address, status: row.status });
+  }));
+
+  // POST /api/admin/farmers/:id/reject
+  // Body: { reviewerAddress: string, reason: string }
+  router.post("/farmers/:id/reject", asyncHandler(async (req, res) => {
+    const { reviewerAddress, reason } = req.body ?? {};
+    if (!reviewerAddress || typeof reviewerAddress !== "string") {
+      return apiError(res, 400, "MISSING_FIELD", "reviewerAddress is required");
+    }
+    if (!reason || typeof reason !== "string") {
+      return apiError(res, 400, "MISSING_FIELD", "reason is required");
+    }
+    const row = await farmerRepo.reject(req.params["id"] as string, reviewerAddress, reason);
+    if (!row) {
+      return apiError(res, 404, "NOT_FOUND", "Registration not found or not in pending state");
+    }
+    res.json({ ok: true, walletAddress: row.wallet_address, status: row.status });
+  }));
 
   return router;
 }

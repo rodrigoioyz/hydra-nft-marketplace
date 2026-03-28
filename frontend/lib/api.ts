@@ -45,6 +45,27 @@ export interface HealthStatus {
   headOpen:   boolean;
 }
 
+export interface FarmerRegistration {
+  id:               string;
+  walletAddress:    string;
+  companyName:      string;
+  status:           "pending" | "approved" | "rejected";
+  farmerPassTxHash: string | null;
+  createdAt:        string;
+}
+
+export interface CropMint {
+  id:            string;
+  cropName:      string;
+  assetNameHex:  string;
+  quantity:      number;
+  priceLovelace: string;
+  txHash:        string | null;
+  status:        string;
+  confirmedAt:   string | null;
+  createdAt:     string;
+}
+
 export interface ListingsResponse {
   listings: Listing[];
   total:    number;
@@ -119,6 +140,18 @@ export const api = {
 
   cancel: (id: string, body: { requestId: string; sellerAddress: string; signedCancelTxCbor: string; txId: string }) =>
     post<{ submissionId: string; status: string }>(`/listings/${id}/cancel`, body),
+
+  farmerStatus: (address: string) =>
+    get<FarmerRegistration>(`/farmers/status/${address}`),
+
+  farmerRegister: (body: { walletAddress: string; companyName: string; identityHash: string }) =>
+    post<FarmerRegistration>("/farmers/register", body),
+
+  cropMint: (body: { farmerAddress: string; cropName: string; assetNameHex: string; quantity: number; priceLovelace: number }) =>
+    post<CropMint>("/crops/mint", body),
+
+  cropList: (address: string) =>
+    get<CropMint[]>(`/crops/${address}`),
 };
 
 // Format lovelace as ADA string
