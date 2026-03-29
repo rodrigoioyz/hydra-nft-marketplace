@@ -25,7 +25,7 @@ interface WalletContextValue {
   installedWallets: WalletInfo[];
   connect:          (name: string) => Promise<void>;
   disconnect:       () => void;
-  signTx:           (unsignedCbor: string) => Promise<string>;
+  signTx:           (unsignedCbor: string, partialSign?: boolean) => Promise<string>;
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null);
@@ -69,9 +69,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem("connectedWallet");
   }, []);
 
-  const signTx = useCallback(async (unsignedCbor: string): Promise<string> => {
+  const signTx = useCallback(async (unsignedCbor: string, partialSign = false): Promise<string> => {
     if (!wallet) throw new Error("No wallet connected");
-    return signTransaction(wallet, unsignedCbor);
+    return signTransaction(wallet, unsignedCbor, partialSign);
   }, [wallet]);
 
   return (

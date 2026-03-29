@@ -143,8 +143,9 @@ export interface NewTxCommand {
   };
 }
 
-export interface InitCommand { tag: "Init" }
-export interface CloseCommand { tag: "Close" }
-export interface FanoutCommand { tag: "Fanout" }
+export interface InitCommand    { tag: "Init" }
+export interface CollectCommand { tag: "Collect" }
+export interface CloseCommand   { tag: "Close" }
+export interface FanoutCommand  { tag: "Fanout" }
 
-export type HydraCommand = NewTxCommand | InitCommand | CloseCommand | FanoutCommand;
+export type HydraCommand = NewTxCommand | InitCommand | CollectCommand | CloseCommand | FanoutCommand;

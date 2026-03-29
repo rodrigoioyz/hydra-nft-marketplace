@@ -131,6 +131,11 @@ export class HydraClient extends EventEmitter {
         console.log(`[HydraClient] headStatus=${this.headStatus} headId=${this.headId ?? "none"}`);
         break;
       }
+      case "HeadIsInitializing":
+        this.headStatus = "Initializing";
+        console.log("[HydraClient] Head INITIALIZING — ready for classic commits");
+        break;
+
       case "HeadIsOpen": {
         const e = event as HeadIsOpenEvent;
         this.headStatus = "Open";
@@ -253,6 +258,26 @@ export class HydraClient extends EventEmitter {
   isOpen(): boolean            { return this.headStatus === "Open"; }
   connected(): boolean         { return this.isConnected; }
 
+  initHead(): void   { this.sendCommand({ tag: "Init" }); }
+  collect(): void    { this.sendCommand({ tag: "Collect" }); }
   closeHead(): void  { this.sendCommand({ tag: "Close" }); }
   fanout(): void     { this.sendCommand({ tag: "Fanout" }); }
+
+  awaitHeadOpen(timeoutMs = 120_000): Promise<HeadIsOpenEvent> {
+    if (this.headStatus === "Open") {
+      return Promise.resolve({ tag: "HeadIsOpen", headId: this.headId ?? "" } as HeadIsOpenEvent);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timeout waiting for HeadIsOpen"));
+      }, timeoutMs);
+      const onOpen = (e: HeadIsOpenEvent) => { cleanup(); resolve(e); };
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("event:HeadIsOpen", onOpen);
+      };
+      this.on("event:HeadIsOpen", onOpen);
+    });
+  }
 }

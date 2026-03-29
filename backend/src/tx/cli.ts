@@ -87,21 +87,24 @@ export class CardanoCliBuilder {
   }
 
   // ── T4.3 — Buy tx (script spend) ─────────────────────────────────────────
-  // Consumes escrow UTxO, pays seller, sends NFT to buyer.
-  // scriptCbor will be provided when Aiken contract is compiled (Epic 8).
+  // Consumes escrow UTxO + buyer input, pays seller, sends NFT to buyer.
 
   buildBuyTx(opts: {
-    escrowRef:      string;   // "txhash#ix" of the script UTxO
-    escrowLovelace: bigint;
-    collateralRef:  string;   // pure-ADA UTxO for Plutus collateral
-    sellerAddress:  string;
-    priceLovelace:  bigint;
-    buyerAddress:   string;
-    unit:           string;   // policyId + assetName
-    minLovelace:    bigint;   // min ADA to send with NFT
-    scriptCbor:     string;   // compiled Aiken script (filled in Epic 8)
-    redeemerCbor:   string;   // JSON of Buy { buyer } redeemer
-    fee:            bigint;
+    escrowRef:          string;   // "txhash#ix" of the script UTxO
+    escrowLovelace:     bigint;
+    escrowTokenQty:     bigint;   // quantity of tokens locked at the script
+    buyerInputRef:      string;   // pure-ADA UTxO owned by the buyer/operator
+    buyerInputLovelace: bigint;
+    collateralRef:      string;   // pure-ADA UTxO for Plutus collateral (different from buyerInputRef)
+    changeAddress:      string;   // where leftover lovelace goes (operator)
+    sellerAddress:      string;
+    priceLovelace:      bigint;
+    buyerAddress:       string;
+    unit:               string;   // policyId + assetName
+    minLovelace:        bigint;   // min ADA to send with NFT to buyer
+    scriptCbor:         string;
+    redeemerCbor:       string;   // JSON of Buy { buyer } redeemer
+    fee:                bigint;
   }): BuiltTx {
     const dir = this.tmp();
     try {
@@ -119,8 +122,14 @@ export class CardanoCliBuilder {
 
       const policyId  = opts.unit.slice(0, 56);
       const assetName = opts.unit.slice(56);
-      const nftValue  = `${opts.minLovelace} + 1 ${policyId}.${assetName}`;
-      const change    = opts.escrowLovelace - opts.priceLovelace - opts.minLovelace - opts.fee;
+      const nftValue  = `${opts.minLovelace} + ${opts.escrowTokenQty} ${policyId}.${assetName}`;
+      // change = all inputs - seller payment - NFT min ADA (already in escrow) - fee
+      const change = opts.escrowLovelace + opts.buyerInputLovelace
+        - opts.priceLovelace - opts.minLovelace - opts.fee;
+      if (change < 0n) throw new Error(
+        `Insufficient funds for buy tx: need ${opts.priceLovelace + opts.minLovelace + opts.fee} ` +
+        `but have ${opts.escrowLovelace + opts.buyerInputLovelace}`
+      );
 
       this.cli(
         `latest transaction build-raw` +
@@ -128,10 +137,11 @@ export class CardanoCliBuilder {
         ` --tx-in-script-file ${scriptFile}` +
         ` --tx-in-inline-datum-present` +
         ` --tx-in-redeemer-file ${redeemerFile}` +
+        ` --tx-in ${opts.buyerInputRef}` +
         ` --tx-in-collateral ${opts.collateralRef}` +
         ` --tx-out ${opts.sellerAddress}+${opts.priceLovelace}` +
         ` --tx-out "${opts.buyerAddress}+${nftValue}"` +
-        (change > 0n ? ` --tx-out ${opts.buyerAddress}+${change}` : "") +
+        (change > 0n ? ` --tx-out ${opts.changeAddress}+${change}` : "") +
         ` --fee ${opts.fee}` +
         ` --protocol-params-file ${process.env.PROTOCOL_PARAMS_PATH ?? ""}` +
         ` --out-file ${unsigned}`
@@ -267,24 +277,26 @@ export class CardanoCliBuilder {
   // Returns unsigned CBOR — the frontend wallet adds the vkey witness.
 
   buildEscrowTxUnsigned(opts: {
-    inputRef:      string;   // "txhash#ix" of seller's NFT UTxO in Head
-    inputLovelace: bigint;
-    inputUnit:     string;   // policyId + assetName (hex)
-    sellerAddress: string;
-    sellerVkh:     string;   // payment key hash (28-byte hex)
-    scriptAddress: string;   // compiled listing validator address
-    priceLovelace: bigint;
-    minLovelace:   bigint;   // min ADA to send to script UTxO
-    fee:           bigint;
+    inputRef:       string;   // "txhash#ix" of seller's NFT UTxO in Head
+    inputLovelace:  bigint;
+    inputUnit:      string;   // policyId + assetName (hex)
+    inputQuantity?: bigint;   // token quantity to lock at script (default 1)
+    sellerAddress:  string;
+    sellerVkh:      string;   // payment key hash (28-byte hex)
+    scriptAddress:  string;   // compiled listing validator address
+    priceLovelace:  bigint;
+    minLovelace:    bigint;   // min ADA to send to script UTxO
+    fee:            bigint;
   }): BuiltTx {
     const dir = this.tmp();
     try {
       const unsigned  = join(dir, "tx.unsigned.json");
       const datumFile = join(dir, "datum.json");
 
-      const policyId  = opts.inputUnit.slice(0, 56);
-      const assetName = opts.inputUnit.slice(56);
-      const change    = opts.inputLovelace - opts.minLovelace - opts.fee;
+      const policyId    = opts.inputUnit.slice(0, 56);
+      const assetName   = opts.inputUnit.slice(56);
+      const tokenQty    = opts.inputQuantity ?? 1n;
+      const change      = opts.inputLovelace - opts.minLovelace - opts.fee;
       if (change < 0n) throw new Error("Insufficient lovelace for escrow tx");
 
       // ListingDatum as cardano-cli detailed-schema JSON
@@ -298,7 +310,7 @@ export class CardanoCliBuilder {
         ],
       }));
 
-      const nftValue = `${opts.minLovelace} + 1 ${policyId}.${assetName}`;
+      const nftValue = `${opts.minLovelace} + ${tokenQty} ${policyId}.${assetName}`;
 
       this.cli(
         `latest transaction build-raw` +

@@ -127,7 +127,7 @@ export function createListingsRouter(pool: Pool, hydra: HydraClient): Router {
     const utxos = hydra.getUtxos();
     const nftRef = Object.entries(utxos).find(([, u]) => {
       const assets = u.value[policyId] as Record<string, number> | undefined;
-      return u.address === sellerAddress && assets?.[assetName] === 1;
+      return u.address === sellerAddress && (assets?.[assetName] ?? 0) >= 1;
     });
     if (!nftRef) {
       return void apiError(res, 400, "nft_not_in_head",
@@ -135,6 +135,9 @@ export function createListingsRouter(pool: Pool, hydra: HydraClient): Router {
     }
     const [inputRef, inputUtxo] = nftRef;
     const inputLovelace = BigInt(inputUtxo.value.lovelace ?? 0);
+    const tokenQuantity = BigInt(
+      (inputUtxo.value[policyId] as Record<string, number> | undefined)?.[assetName] ?? 1
+    );
 
     // Get seller VKH from address
     const sellerVkh = getPaymentKeyHash(config.cardanoCliPath, sellerAddress);
@@ -162,6 +165,7 @@ export function createListingsRouter(pool: Pool, hydra: HydraClient): Router {
       inputRef,
       inputLovelace,
       inputUnit:     unit,
+      inputQuantity: tokenQuantity,
       sellerAddress,
       sellerVkh,
       scriptAddress: config.scriptAddress,
@@ -286,34 +290,59 @@ export function createListingsRouter(pool: Pool, hydra: HydraClient): Router {
         `Escrow UTxO ${escrowRef} not found in current Head snapshot`);
     }
     const escrowLovelace = BigInt(escrowUtxo.value.lovelace ?? 0);
+    const policyId  = listing.unit.slice(0, 56);
+    const assetName = listing.unit.slice(56);
+    const escrowTokenQty = BigInt(
+      (escrowUtxo.value[policyId] as Record<string, number> | undefined)?.[assetName] ?? 1
+    );
+    const priceLovelace = BigInt(listing.price_lovelace);
 
-    // Find a pure-ADA UTxO in the Head for collateral (operator-owned)
-    const collateralEntry = Object.entries(utxos).find(([ref, u]) => {
+    // Find two distinct pure-ADA UTxOs in the Head: one for collateral, one for buyer input.
+    // These must be owned by the operator (we sign with operator key).
+    const isPureAda = (ref: string, u: { value: Record<string, unknown> }) => {
       if (ref === escrowRef) return false;
-      // Only lovelace, no other tokens
       const keys = Object.keys(u.value).filter(k => k !== "lovelace");
-      return keys.length === 0 && (u.value.lovelace ?? 0) >= 5_000_000;
-    });
-    if (!collateralEntry) {
-      return void apiError(res, 503, "no_collateral",
-        "No suitable collateral UTxO found in Head (need pure-ADA UTxO >= 5 ADA)");
+      return keys.length === 0;
+    };
+    const pureAdaUtxos = Object.entries(utxos)
+      .filter(([ref, u]) => isPureAda(ref, u))
+      .sort((a, b) => Number(BigInt(b[1].value.lovelace ?? 0) - BigInt(a[1].value.lovelace ?? 0)));
+
+    if (pureAdaUtxos.length < 2) {
+      return void apiError(res, 503, "insufficient_utxos",
+        `Need at least 2 pure-ADA UTxOs in Head for collateral + buyer input; found ${pureAdaUtxos.length}. ` +
+        `Use POST /api/head/split-ada to prepare.`);
     }
-    const [collateralRef] = collateralEntry;
+
+    // Largest for buyer input (needs to cover price), second-largest for collateral
+    const [buyerInputEntry, collateralEntry] = pureAdaUtxos;
+    const [buyerInputRef, buyerInputUtxo]    = buyerInputEntry;
+    const [collateralRef]                    = collateralEntry;
+    const buyerInputLovelace = BigInt(buyerInputUtxo.value.lovelace ?? 0);
+
+    if (buyerInputLovelace < priceLovelace) {
+      return void apiError(res, 503, "insufficient_funds",
+        `Buyer input UTxO has ${buyerInputLovelace} lovelace but price is ${priceLovelace}`);
+    }
 
     // Build buyer VKH for redeemer
-    const buyerVkh  = getPaymentKeyHash(config.cardanoCliPath, buyerAddress);
-    const redeemer  = JSON.stringify({
+    const buyerVkh = getPaymentKeyHash(config.cardanoCliPath, buyerAddress);
+    const redeemer = JSON.stringify({
       constructor: 0,
       fields: [{ bytes: buyerVkh }],
     });
 
-    // Build and sign buy tx (operator signs — no buyer sig required for Buy action)
+    // Build and sign buy tx (operator signs — listing validator doesn't require buyer signature)
     const tx = builder.buildBuyTx({
       escrowRef,
       escrowLovelace,
+      escrowTokenQty,
+      buyerInputRef,
+      buyerInputLovelace,
       collateralRef,
+      changeAddress:  config.operatorAddress,
       sellerAddress:  listing.seller_address,
-      priceLovelace:  BigInt(listing.price_lovelace),
+      priceLovelace,
       buyerAddress,
       unit:           listing.unit,
       minLovelace:    MIN_ADA_AT_SCRIPT,

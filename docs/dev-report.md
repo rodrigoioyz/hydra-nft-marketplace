@@ -1,6 +1,6 @@
 # Hydra NFT Marketplace — Development Report
 
-**Last updated:** 2026-03-28
+**Last updated:** 2026-03-29
 **Stack:** Aiken v1.1.19 · cardano-cli 10.x · Hydra v1.2.0 · TypeScript/Express · PostgreSQL · Next.js 14
 **Network:** Cardano preprod (testnet-magic 1)
 
@@ -8,20 +8,21 @@
 
 ## 1. What Was Built
 
-A fixed-price marketplace for agricultural crop tokens where all trades execute **inside a Hydra Head** (Cardano Layer 2). Farmers register with a privacy-preserving KYC (FarmerPass NFT on L1), then mint and sell fungible crop tokens (Arroz, Soja, Maíz, etc.) inside the Head.
+A fixed-price marketplace for agricultural crop tokens where all trades execute **inside a Hydra Head** (Cardano Layer 2). Farmers register with a privacy-preserving KYC (FarmerPass NFT on L1), mint fungible crop tokens on L1, commit them into the Head, and trade inside the Head.
 
 | Epic | Description | Status |
 |------|-------------|--------|
 | 4  | Hydra WebSocket client + cardano-cli builder | ✅ |
 | 5  | Listings backend (create, escrow-confirm, DB) | ✅ |
-| 6  | Buy flow (operator-signed, collateral selection) | ✅ |
+| 6  | Buy flow (operator-signed, collateral selection) | ✅ fixed |
 | 7  | Cancel flow (seller-signed, 2-step) | ✅ |
 | 8  | Aiken listing validator (14 tests) | ✅ |
 | 9  | Next.js 14 frontend (browse, sell, buy, cancel) | ✅ |
 | 10 | State sync engine (SnapshotConfirmed catch-up, session recovery) | ✅ |
 | 11 | Admin & observability (health, stats, request logging) | ✅ |
 | 12 | E2E test suite (TypeScript, cardano-cli signing) | ✅ |
-| 13 | Farmer identity system (FarmerPass + CropTokens) | ✅ backend/contracts · ⚠️ frontend partial |
+| 13 | Farmer identity system (FarmerPass + CropTokens on L1) | ✅ |
+| 14 | Commit flow (classic commit + collect + ADA split) | ✅ fixed |
 
 ---
 
@@ -29,76 +30,28 @@ A fixed-price marketplace for agricultural crop tokens where all trades execute 
 
 ```
 hydra-nft-marketplace/
-├── Makefile
-├── backend/
-│   └── src/
-│       ├── index.ts
-│       ├── config.ts
-│       ├── api/
-│       │   ├── router.ts           # mounts all routers
-│       │   ├── listings.ts         # 7 listing endpoints
-│       │   ├── farmers.ts          # NEW: /farmers + /crops endpoints
-│       │   ├── head.ts
-│       │   ├── health.ts
-│       │   ├── admin.ts            # + farmer approve/reject endpoints
-│       │   ├── events.ts
-│       │   └── middleware.ts
-│       ├── db/
-│       │   ├── migrations/
-│       │   │   ├── 001_initial_schema.sql
-│       │   │   ├── 002_production_indexes.sql
-│       │   │   └── 003_farmer_identity.sql  # NEW
-│       │   ├── migrate.ts
-│       │   ├── farmerRepo.ts       # NEW: FarmerRepo + CropMint CRUD
-│       │   ├── listingRepo.ts
-│       │   ├── saleRepo.ts
-│       │   ├── eventStore.ts
-│       │   └── pool.ts
-│       ├── hydra/
-│       │   ├── client.ts
-│       │   └── idempotency.ts
-│       ├── sync/stateRecovery.ts
-│       ├── tx/
-│       │   ├── cli.ts
-│       │   ├── mesh.ts
-│       │   └── index.ts
-│       ├── types/
-│       │   ├── hydra.ts
-│       │   └── marketplace.ts
-│       └── utils/address.ts
-├── contracts/
-│   ├── aiken.toml
-│   ├── plutus.json                 # Compiled output (3 validators)
-│   └── validators/
-│       ├── listing.ak              # Listing spend validator (14 tests)
-│       ├── farmer_pass.ak          # NEW: FarmerPass mint policy (6 tests)
-│       └── crop_token.ak           # NEW: CropToken mint policy (6 tests)
-├── e2e/
-│   ├── config.ts
-│   ├── helpers.ts
-│   └── test.ts
+├── backend/src/
+│   ├── api/
+│   │   ├── head.ts             # GET status, POST init/collect/split-ada
+│   │   ├── listings.ts         # full listing lifecycle
+│   │   ├── farmers.ts          # KYC + CropToken + build-commit-tx
+│   │   ├── health.ts
+│   │   ├── admin.ts
+│   │   └── middleware.ts
+│   ├── hydra/client.ts         # WS client + initHead/collect/awaitHeadOpen
+│   ├── tx/cli.ts               # cardano-cli builder (escrow, buy, cancel, transfer)
+│   ├── tx/l1mint.ts            # L1 mint helpers + UTxO query
+│   ├── types/hydra.ts          # HydraCommand union (Init/Collect/Close/Fanout/NewTx)
+│   └── config.ts
+├── contracts/validators/
+│   ├── listing.ak              # spend: Buy (quantity>=1) | Cancel
+│   ├── farmer_pass.ak          # operator-controlled mint policy
+│   └── crop_token.ak           # farmer+farmerpass mint policy
 ├── frontend/
-│   ├── app/
-│   │   ├── page.tsx
-│   │   ├── sell/SellForm.tsx       # Farmer-friendly (no hex fields)
-│   │   ├── sell/page.tsx
-│   │   ├── identity/               # NEW
-│   │   │   ├── page.tsx            # /identity route
-│   │   │   ├── IdentityTabs.tsx    # Tab switcher
-│   │   │   ├── KycForm.tsx         # KYC form (sha256 in browser)
-│   │   │   └── CropMintForm.tsx    # Register crop lots
-│   │   ├── admin/                  # NEW
-│   │   │   ├── page.tsx            # /admin route
-│   │   │   └── AdminPanel.tsx      # Approve/reject farmers
-│   │   ├── listings/[id]/
-│   │   └── status/page.tsx
-│   ├── components/
-│   │   ├── Navbar.tsx              # + Identidad + Admin links
-│   │   ├── HeadStatusBadge.tsx
-│   │   └── ListingCard.tsx
-│   └── lib/api.ts                  # + farmerStatus, farmerRegister, cropMint, cropList
+│   ├── app/sell/SellForm.tsx   # full commit+collect+list flow
+│   ├── context/WalletContext.tsx  # signTx(cbor, partialSign?)
+│   └── lib/wallet.ts           # signTransaction(wallet, cbor, partialSign)
 └── hydra/
-    ├── Makefile
     ├── keys/
     └── scripts/
 ```
@@ -107,49 +60,77 @@ hydra-nft-marketplace/
 
 ## 3. Architecture Decisions
 
-### 3.1 Seller-funded escrow model
+### 3.1 Buyer-funded escrow model (REVISED 2026-03-29)
 
-The escrow UTxO holds the NFT + `priceLovelace` + min-ADA. The buyer does **not** contribute ADA. The operator builds and signs the buy tx entirely. Value flow:
+**Original (broken) design:** The escrow UTxO was supposed to hold NFT + priceLovelace + minADA. The buyer paid nothing — the operator built the buy tx using only the escrow UTxO.
+
+**Problem:** The change calculation `escrowLovelace - priceLovelace - minLovelace - fee` is **always negative** for any real price, because the escrow only contains minADA (~2 ADA), not the price (e.g. 40 ADA).
+
+**Fixed design (buyer-funded):** The buy tx requires **two inputs**: the escrow UTxO (holds NFT + minADA) and a buyer/operator pure-ADA UTxO that funds the seller payment.
 
 ```
-escrow UTxO (NFT + price + minAda)
-  → seller output (price ADA)
-  → buyer output (NFT + minAda)
+Inputs:
+  escrow UTxO  (NFT + minADA)
+  buyer input  (buyerLovelace ≥ priceLovelace)
+
+Outputs:
+  seller       (priceLovelace)
+  buyer        (NFT + minADA)
+  change       (escrowLovelace + buyerLovelace - priceLovelace - minLovelace - fee)
 ```
 
-### 3.2 FarmerPass NFT (L1 identity token)
+The listing validator (`listing.ak`) only checks outputs — it does **not** require the buyer's signature. The operator uses their own ADA UTxO in the Head as the buyer input, builds and signs server-side, and the NFT goes to the `buyerAddress` specified in the redeemer.
+
+This requires **2 pure-ADA UTxOs** in the Head (one for buyer input, one for collateral). Use `POST /api/head/split-ada` immediately after the Head opens to create the second UTxO.
+
+### 3.2 Classic commit (not incremental deposit)
+
+**Incremental deposit (Hydra 1.2.0):** `POST /commit` while Head is Open → deposit tx on L1 → Hydra emits `CommitRecorded` → Hydra processes increment. **THIS IS BROKEN in our setup.** The deposit confirms on L1 but Hydra never emits `CommitRecorded`. `GET /commits` always returns `[]`. Root cause unclear (possibly missing `--hydra-scripts-tx-id` flag, or incremental commits disabled).
+
+**Classic commit (what we use):** Commit UTxOs while Head is in `Initializing` state (before `Collect`). All committed UTxOs are available when the Head opens. Reliable and tested.
+
+**Flow:**
+1. `POST /api/head/init` (if Head is Idle) → Hydra sends Init → `HeadIsInitializing`
+2. `POST /crops/build-commit-tx` — combined commit body with pepito's CropToken + operator's ADA → operator signs server-side → returns partially-signed CBOR
+3. Farmer signs in browser (`signTx(cbor, true)` — partialSign=true) → submits to L1 via `POST /crops/submit-commit-tx`
+4. `POST /api/head/collect` → Hydra sends Collect → waits for `HeadIsOpen` → records session in DB
+5. `POST /api/head/split-ada` → splits operator's ADA into 2 UTxOs (collateral + buyer input)
+
+### 3.3 Combined commit (multi-sig)
+
+The classic commit includes **two UTxOs** owned by different parties:
+- Farmer's CropToken UTxO (owned by pepito, on L1)
+- Operator's pure-ADA UTxO (owned by operator, on L1)
+
+Hydra's `POST /commit` returns one unsigned tx CBOR that spends both. Since each UTxO has a different owner:
+1. Backend signs with operator's skey server-side (`cardano-cli transaction sign`)
+2. Returns the operator-signed CBOR to the frontend
+3. Frontend wallet calls `signTx(operatorSignedCbor, true)` — adds farmer's witness without removing operator's
+4. Submits fully-signed CBOR to L1 via `POST /crops/submit-commit-tx`
+
+CIP-30 wallets support `partialSign=true` (second arg to `wallet.signTx()`) for exactly this case.
+
+### 3.4 FarmerPass NFT (L1 identity token)
 
 FarmerPass is an L1 NFT minted under a policy controlled by the operator:
 - **Token name** = farmer's payment key hash (28 bytes) — enforces one pass per wallet
-- **Datum** = `{ company_name, identity_hash, issued_at }`
 - `identity_hash` = sha256("nombre:documento") — computed client-side; PII never stored anywhere
 - Lives on L1 so it survives Hydra Head restarts
-- When a Head reopens, the operator re-commits relevant UTxOs
 
-### 3.3 CropToken (fungible, L2)
+### 3.5 CropToken (fungible, minted on L1, traded on L2)
 
-Crop tokens represent real-world commodity lots:
-- Fungible (not NFT) — e.g. 1000 units of "Arroz"
-- **Token name** = UTF-8 hex of crop name (e.g. `6172726f7a` for "arroz")
-- Minting policy requires: (a) farmer signature + (b) FarmerPass as reference input
-- Traded inside the Hydra Head; listing validator accepts `quantity_of >= 1` (not `== 1`)
+- Fungible (not NFT) — e.g. 1000 units of "Maiz pepito"
+- Minted on L1 using `buildCropMintTxUnsigned` (farmer signs in browser)
+- Committed into the Head for trading via combined commit
+- Listing validator uses `quantity >= 1` (not `== 1`) for fungible support
+- **Escrow locks full token quantity** (not just 1 unit) to avoid unbalanced tx when input has 1000 tokens
 
-### 3.4 No UTxO contention
-
-The Pyth State NFT (if used) and the FarmerPass are always **reference inputs** — never spent. Multiple users can mint/trade in the same block without contention on the oracle or identity UTxO.
-
-### 3.5 Two-step seller flows
+### 3.6 Two-step seller flows
 
 List and Cancel require the seller's signature but the backend never holds the seller's key:
 1. Backend builds unsigned tx CBOR → returns to frontend
-2. Seller signs externally (cardano-cli or wallet)
+2. Seller signs in browser wallet (CIP-30 `signTx`)
 3. Frontend posts signed CBOR back → backend submits to Hydra
-
-### 3.6 State sync via SnapshotConfirmed
-
-`onTxValid` → primary path (immediate update).
-`onSnapshotConfirmed` → catch-up (re-apply confirmed txs after restart/reconnect).
-`Greetings` → session recovery on reconnect.
 
 ---
 
@@ -157,392 +138,415 @@ List and Cancel require the seller's signature but the backend never holds the s
 
 ### 4.1 `listing.ak` — spend validator
 
-**Redeemer branches:**
+```aiken
+Buy { buyer } ->
+  seller_paid(tx.outputs, datum.seller, datum.price) &&
+  buyer_receives_nft(tx.outputs, buyer, datum.policy_id, datum.asset_name)
+Cancel ->
+  seller_signed(tx.extra_signatories, datum.seller) &&
+  nft_returned(tx.outputs, datum.seller, datum.policy_id, datum.asset_name)
+```
 
-`Buy { buyer }` → `seller_paid` (lovelace ≥ price) + `buyer_receives_nft` (quantity ≥ 1)
-`Cancel` → `seller_signed` + `nft_returned`
-
-Note: changed from `quantity == 1` to `quantity >= 1` to support fungible CropTokens.
+Key: `Buy` does NOT require buyer signature — only output checks. `quantity >= 1` (not `== 1`).
 
 ### 4.2 `farmer_pass.ak` — minting policy
 
-```aiken
-validator farmer_pass_policy(operator_pkh: VerificationKeyHash) {
-  mint(_redeemer, _policy_id, tx) {
-    list.has(tx.extra_signatories, operator_pkh)
-  }
-}
-```
-
-Exports `has_farmer_pass(tx, pass_policy_id, farmer_pkh)` helper — used by `crop_token.ak`.
+Operator controls minting. Token name = farmer PKH. Exports `has_farmer_pass()`.
 
 ### 4.3 `crop_token.ak` — minting policy
 
 ```aiken
-validator crop_token_policy(farmer_pass_policy_id, operator_pkh) {
-  mint(redeemer: CropAction, ...) {
-    MintCrop { farmer_pkh } ->
-      list.has(tx.extra_signatories, farmer_pkh) &&
-      has_farmer_pass(tx, farmer_pass_policy_id, farmer_pkh)
-    BurnCrop { owner_pkh } ->
-      list.has(tx.extra_signatories, owner_pkh) ||
-      list.has(tx.extra_signatories, operator_pkh)
-  }
-}
+MintCrop { farmer_pkh } ->
+  list.has(tx.extra_signatories, farmer_pkh) &&
+  has_farmer_pass(tx, farmer_pass_policy_id, farmer_pkh)
+BurnCrop { owner_pkh } ->
+  list.has(tx.extra_signatories, owner_pkh) ||
+  list.has(tx.extra_signatories, operator_pkh)
 ```
 
 ### 4.4 Test suite (26 tests, all pass)
 
-| Module | Tests | All pass |
-|--------|-------|----------|
-| `listing` | 14 | ✅ |
-| `farmer_pass` | 6 | ✅ |
-| `crop_token` | 6 | ✅ |
-| **Total** | **26** | ✅ |
-
 ```bash
 cd contracts
-/home/rodrigo/.aiken/versions/v1.1.19/.../aiken check   # 26/26 pass
-/home/rodrigo/.aiken/versions/v1.1.19/.../aiken build   # → plutus.json
+aiken check   # 26/26
+aiken build   # → plutus.json
 ```
 
-### 4.5 Compiled output
+### 4.5 Compiled output (preprod)
 
 - **Listing script hash:** `8f6e69350f02a04688c6e82fe3e7aebcded7be4ecd0246e727ad3ebc`
-- **Listing address (preprod):** `addr_test1wz8ku6f4pup2q35gcm5zlcl8467da4a7fmxsy3h8y7kna0q0thcrm`
-- FarmerPass and CropToken script hashes are in `contracts/plutus.json` but **not yet deployed** — they still need to be parameterised with the actual operator PKH and committed to preprod.
+- **Listing address:** `addr_test1wz8ku6f4pup2q35gcm5zlcl8467da4a7fmxsy3h8y7kna0q0thcrm`
+- FarmerPass + CropToken policies are in `contracts/plutus.json`, parameterised at runtime from `getL1Scripts()`
 
 ---
 
 ## 5. Bugs Encountered and Fixed
 
-### 5.1 cardano-cli 10.x — txid returns JSON, not a plain string
+### 5.1 `buildBuyTx` — missing buyer input (CRITICAL)
 
-`cardano-cli latest transaction txid` returns `{"txhash":"..."}` in v10.x. Fixed in `cli.ts` with try/catch JSON parse.
+**Symptom:** `change = escrowLovelace - priceLovelace - minLovelace - fee` always negative (e.g. 2 ADA - 40 ADA - 2 ADA = -40 ADA). cardano-cli rejects with unbalanced tx.
 
-### 5.2 Aiken stdlib v3 — `assets.add` takes 4 arguments
+**Root cause:** The buy tx was designed with a "seller-funded escrow" model — escrow holds price+NFT. This was never actually implemented.
 
-`assets.add(self, policy_id, asset_name, qty)` — not 2-argument.
+**Fix:** Added `buyerInputRef` and `buyerInputLovelace` to `buildBuyTx`. The buy handler (`POST /listings/:id/buy`) finds two distinct pure-ADA UTxOs in the Head — one for buyer input, one for collateral.
 
-### 5.3 Aiken stdlib v3 — no `VerificationKeyCredential`
+**Requirement:** Need ≥ 2 pure-ADA UTxOs in the Head. Use `POST /api/head/split-ada` after opening.
 
-Use `cardano/address.{VerificationKey}` and `VerificationKey(vkh)`.
+### 5.2 `buildEscrowTxUnsigned` — only locks 1 token unit
 
-### 5.4 Aiken — `use` imports must be at the top of the file
+**Symptom:** Escrow always locked `1 tokenUnit` regardless of actual quantity. For a UTxO with 1000 Maiz tokens, the cardano-cli command would produce an unbalanced tx (999 tokens disappearing).
 
-The Aiken parser rejects `use` statements anywhere except the very top of the file. If tests require extra imports (e.g. `use cardano/assets`), they must be declared at the top even if only used in the test section. Placing `use` after any type/function definition causes a parse error.
+**Fix:** Added `inputQuantity?: bigint` parameter. Escrow now locks the full token quantity. Change = `inputLovelace - minLovelace - fee` (ADA only; no token change needed when locking all tokens). The listing handler extracts the quantity from the Head UTxO snapshot.
 
-### 5.5 Aiken — multi-line value in record literal causes parse error
+### 5.3 Hydra incremental commit (deposit) broken
 
-Extract multi-line expressions to `let` bindings before using them in record literals.
+**Symptom:** `POST /commit` while Head is Open confirms on L1 at the deposit script address (`addr_test1wzhqrkk782wrgm2ujwhreceegy4epg9clqlefmrt4gjwxrqckxj2j`) but Hydra never emits `CommitRecorded`. `GET /commits` always returns `[]`.
 
-### 5.6 `@types/express` v5 — params typed as `string | string[]`
+**Debugging done:**
+- Deposit tx confirmed on L1 with correct headId datum
+- Hydra logs only show `TickObserved` events — deposit script output is ignored
+- `pendingDeposits: {}` in Hydra persistent state throughout
+- Head was using `--contestation-period 600` but env had `180` — unrelated
 
-Use `req.params["id"] as string`.
+**Conclusion:** Hydra 1.2.0 incremental deposits may require `--hydra-scripts-tx-id` (the tx that published Hydra scripts on-chain). Our node is started without this flag. **Do not use incremental deposits.** Use classic commit only.
 
-### 5.7 TxInvalid with fee=0
+**Resolution:** Closed Head (fanout), re-initialized with `{"tag":"Init"}`, use classic commit before `Collect`.
 
-Hydra node must be started with `protocol-parameters-zero-fees.json`. Set `TX_FEE=0` in backend `.env`.
+### 5.4 Head got stuck in Closed state
 
-### 5.8 Migration 002 — wrong column name
+**Symptom:** Head was `Closed`. Sending `{"tag":"Close"}` returned `CommandFailed`.
 
-`tx_submissions` has `submitted_at`, not `created_at`. Fixed index definition in `002_production_indexes.sql`.
+**Diagnosis:** Head was already closed. Contestation deadline: `2026-03-29T00:49:53Z`.
 
-### 5.9 Aiken — `buy_nft_quantity_two` test semantic change
+**Fix:** Waited for deadline, then sent `{"tag":"Fanout"}` → `HeadIsFinalized` → `Idle`. Then re-initialized.
 
-After changing `quantity_of == 1` to `>= 1` in `listing.ak`, the test `buy_nft_quantity_two` changed from an expected-fail to an expected-pass. Removed the `fail` annotation.
+### 5.5 `HeadIsInitializing` event not handled
+
+**Symptom:** After `{"tag":"Init"}`, the backend's `getHeadStatus()` returned `Idle` instead of `Initializing` because the event was not handled in `applyEvent()`.
+
+**Fix:** Added `case "HeadIsInitializing": this.headStatus = "Initializing"` to `client.ts`.
+
+### 5.6 `CollectCommand` missing from `HydraCommand` type
+
+`HydraCommand` union type in `types/hydra.ts` only had `Init | Close | Fanout | NewTx`. Added `CollectCommand { tag: "Collect" }`.
+
+### 5.7 WSL path mangling in Bash commands
+
+When running bash commands from Windows via `wsl.exe -e`, Windows Git Bash can mangle Unix paths starting with `/`. Use `wsl.exe -d Ubuntu-24.04 -- bash -c '...'` with `dangerouslyDisableSandbox: true`.
+
+### 5.8 cardano-cli 10.x — txid returns JSON
+
+`cardano-cli latest transaction txid` returns `{"txhash":"..."}` not a plain string. Fixed in `cli.ts` with try/catch JSON parse.
+
+### 5.9 Aiken stdlib v3 — various
+
+- `assets.add` is 4-arg: `assets.add(self, policy_id, asset_name, qty)`
+- No `VerificationKeyCredential` — use `VerificationKey(vkh)`
+- `use` imports must all be at top of file
+- Multi-line values in record literals need `let` extraction
+
+### 5.10 Migration 002 — wrong column name
+
+`tx_submissions` has `submitted_at`, not `created_at`. Fixed index in `002_production_indexes.sql`.
 
 ---
 
-## 6. Database Schema
+## 6. Known Preprod State (2026-03-29)
+
+### Active processes
+
+| Process | PID range | tmux session | Port |
+|---------|-----------|--------------|------|
+| cardano-node | 230 | (background) | 6000 |
+| hydra-node | 2963127 | hydra-marketplace | 4001 |
+| backend (tsx) | ~3000 | hydra-backend | 3000 |
+| frontend (next dev) | ~3792041 | hydra-frontend | 3001 |
+
+### Restart commands
+
+```bash
+# Backend (in tmux hydra-backend session)
+tmux send-keys -t hydra-backend C-c
+tmux send-keys -t hydra-backend 'cd /home/rodrigo/hydra-nft-marketplace/backend && npx tsx src/index.ts 2>&1 | tee /tmp/backend.log' Enter
+
+# Frontend auto-reloads (next dev --hot)
+
+# Hydra node (in tmux hydra-marketplace session)
+tmux send-keys -t hydra-marketplace C-c
+# then restart with the full hydra-node command (see hydra/scripts/start.sh)
+```
+
+### Key paths
 
 ```
-head_sessions        — one row per Hydra Head session
-listings             — NFT listings; status: draft→active→sold/cancelled/failed
-sales                — confirmed purchases
-tx_submissions       — audit log of every tx sent to Hydra
-hydra_events         — raw Hydra WS event log
-assets               — optional NFT metadata cache
-
-farmer_registrations — KYC submissions; status: pending→approved/rejected
-                       company_name (public), identity_hash (sha256, private)
-                       farmer_pass_tx_hash set when operator mints on L1
-crop_mints           — crop lot records linked to approved farmers
-                       crop_name (plain), asset_name_hex (UTF-8 hex), quantity, price_lovelace
+cardano-cli:      /home/rodrigo/workspace/hydra_test/bin/cardano-cli
+hydra-node:       /home/rodrigo/workspace/hydra_test/hydra-bin/hydra-node
+node socket:      /home/rodrigo/workspace/hydra_test/cardano_preprod/sockets/node.socket
+operator skey:    /home/rodrigo/hydra-nft-marketplace/hydra/keys/cardano.skey
+hydra skey:       /home/rodrigo/hydra-nft-marketplace/hydra/keys/hydra.sk
+protocol params:  /home/rodrigo/hydra-nft-marketplace/hydra/keys/protocol-parameters.json
+persistence:      /home/rodrigo/hydra-nft-marketplace/hydra/data
 ```
 
-Key constraints:
-- `UNIQUE INDEX listings_active_unit WHERE status = 'active'` — one active listing per unit
-- `farmer_registrations.wallet_address UNIQUE` — one registration per wallet
-- `crop_mints.farmer_address → farmer_registrations(wallet_address)` — FK enforces approved farmer
+### Known L1 UTxOs (last verified 2026-03-29)
+
+| Address | UTxO ref | Contents |
+|---------|----------|----------|
+| pepito | `8ac96ab6...#0` | 2 ADA + 1000 Maiz pepito (policyId `111da66...`) |
+| pepito | `9dfc152c...#0` | 2 ADA + 1000 coliflor pepito |
+| operator | `0523c562...#2` | ~86 ADA (pure ADA) |
+
+Pepito's address: `addr_test1qrgff35ks084ej5va4y2cc88092rfcgcdwr4zjtcq238sv9edtserxw9vp4fe9a86wl9r3vm7nu6gw0z8z96akylkm6sy6xm6t`
+
+### CropToken policy ID
+
+`111da6625fa277baf894d3c16f799349a44cd8713e55ac7c3c950c4d`
 
 ---
 
 ## 7. API Endpoints
 
-### Public
+### Head management (new 2026-03-29)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/health` | Liveness (DB + Hydra + head status) |
-| GET | `/api/head/status` | Current head session |
-| GET | `/api/listings` | Browse listings (filter: status, limit, offset) |
+| GET | `/api/head/status` | Current head session from DB + live hydra status |
+| GET | `/api/head/utxos` | Live UTxO snapshot from `GET /snapshot/utxo` |
+| POST | `/api/head/init` | Send `{"tag":"Init"}` (Head must be Idle) |
+| POST | `/api/head/collect` | Send `{"tag":"Collect"}`, await HeadIsOpen, record session in DB |
+| POST | `/api/head/split-ada` | Intra-Head ADA split (body: `{splitLovelace?: number}`, default 20 ADA) |
+
+### CropToken commit (updated 2026-03-29)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/crops/build-commit-tx` | Combined commit: farmer token + operator ADA. Operator pre-signs. Returns partially-signed CBOR. |
+| POST | `/api/crops/submit-commit-tx` | Submit fully-signed CBOR to L1 |
+
+### Listings
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/listings` | Browse (filter: status, limit, offset) |
 | GET | `/api/listings/:id` | Single listing + sale |
-| POST | `/api/listings` | Create listing → unsigned escrow CBOR |
-| POST | `/api/listings/:id/escrow-confirm` | Submit signed escrow CBOR |
-| POST | `/api/listings/:id/buy` | Buy (operator-signed) |
+| POST | `/api/listings` | Create draft → returns unsigned escrow CBOR (full token qty) |
+| POST | `/api/listings/:id/escrow-confirm` | Submit signed escrow CBOR → activates listing |
+| POST | `/api/listings/:id/buy` | Buy (operator-signed, buyer-funded) |
 | GET | `/api/listings/:id/cancel-tx` | Unsigned cancel CBOR for seller |
 | POST | `/api/listings/:id/cancel` | Submit signed cancel CBOR |
-| POST | `/api/farmers/register` | Submit KYC (identity_hash computed in browser) |
-| GET | `/api/farmers/status/:address` | Check own registration status |
-| POST | `/api/crops/mint` | Record crop mint intent (requires approved status) |
-| GET | `/api/crops/:address` | List farmer's crop lots |
 
-### Admin (`X-Admin-Key` header required)
+### Farmers
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/farmers/register` | Submit KYC |
+| GET | `/api/farmers/status/:address` | Registration status |
+| POST | `/api/crops/build-mint-tx` | Build unsigned L1 CropToken mint tx |
+| POST | `/api/crops/submit-mint-tx` | Submit signed L1 mint tx |
+| GET | `/api/crops/wallet/:address` | L1 CropTokens in wallet |
+| GET | `/api/crops/:address` | Crop mint records in DB |
+
+### Admin (`X-Admin-Key` header)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/admin/events` | Recent hydra_events |
-| GET | `/api/admin/tx-submissions` | All tx submissions |
 | GET | `/api/admin/stats` | Aggregate counts |
-| POST | `/api/admin/head/close` | Send Close to Hydra node |
+| POST | `/api/admin/head/close` | Send Close |
 | POST | `/api/admin/head/fanout` | Send Fanout |
-| GET | `/api/admin/farmers/pending` | Pending KYC queue |
-| POST | `/api/admin/farmers/:id/approve` | Approve + set FarmerPass tx hash |
-| POST | `/api/admin/farmers/:id/reject` | Reject with reason |
+| GET | `/api/admin/farmers/pending` | Pending KYC |
+| POST | `/api/admin/farmers/:id/approve` | Approve + FarmerPass tx hash |
+| POST | `/api/admin/farmers/:id/reject` | Reject |
 
 ---
 
-## 8. How to Run
+## 8. How to Run (2026-03-29)
 
 ### Prerequisites
 
-```bash
-# All commands inside WSL Ubuntu-24.04
-/home/rodrigo/workspace/hydra_test/bin/cardano-cli
-/home/rodrigo/workspace/hydra_test/hydra-bin/hydra-node
-/home/rodrigo/workspace/hydra_test/cardano_preprod/sockets/node.socket
-```
-
-### 1. PostgreSQL
+All commands inside WSL `Ubuntu-24.04`.
 
 ```bash
-sudo service postgresql start
+# Cardano node (already running as daemon)
+ls /home/rodrigo/workspace/hydra_test/cardano_preprod/sockets/node.socket  # must exist
+
+# Hydra node (starts in tmux hydra-marketplace)
+# Already running — check with: tmux attach -t hydra-marketplace
 ```
 
-### 2. Hydra node
+### Start sequence
 
 ```bash
-cd /home/rodrigo/hydra-nft-marketplace
-make hydra-start
-make hydra-init
-bash hydra/scripts/commit.sh
+# 1. Backend
+tmux new-session -d -s hydra-backend 'cd /home/rodrigo/hydra-nft-marketplace/backend && npx tsx src/index.ts 2>&1 | tee /tmp/backend.log'
+
+# 2. Frontend
+tmux new-session -d -s hydra-frontend 'cd /home/rodrigo/hydra-nft-marketplace/frontend && npm run dev -- --port 3001'
+
+# 3. Verify
+curl http://127.0.0.1:3000/api/health | jq
+# → {"ok":true,"hydra":"connected","headStatus":"..."}
 ```
 
-### 3. Backend
+### Head lifecycle (start fresh)
 
 ```bash
-cd backend && npm run dev   # port 3000
+# If Head is Final/Idle, init a new one:
+curl -X POST http://127.0.0.1:3000/api/head/init
+# → {"ok":true,"message":"Init command sent"}
+# Wait for HeadIsInitializing (~10-30s on preprod)
+
+# Check status:
+curl http://127.0.0.1:3000/api/health | jq .headStatus
+# → "Initializing"
 ```
 
-### 4. Frontend
-
-```bash
-cd frontend && npm run dev -- --port 3001   # port 3001
-```
+Then in the browser (`/sell`):
+1. Connect pepito's wallet
+2. Select a CropToken → click **"Commit al Head"** (wallet signs with `partialSign=true`)
+3. After commit → click **"Abrir Head (Collect)"** (waits ~30s)
+4. After Head opens → click **"Dividir ADA"** (creates 2nd operator UTxO)
+5. Token shows **"En el Head ✓"** → fill price → **"Publicar"**
 
 ### Environment variables
 
 **`backend/.env`:**
 ```bash
 HYDRA_WS_URL=ws://127.0.0.1:4001
+HYDRA_HTTP_URL=http://127.0.0.1:4001
 DATABASE_URL=postgresql://marketplace:marketplace@127.0.0.1:5432/marketplace
 PORT=3000
-CARDANO_CLI_PATH=...
-SKEY_PATH=...
+CARDANO_CLI_PATH=/home/rodrigo/workspace/hydra_test/bin/cardano-cli
+SKEY_PATH=/home/rodrigo/hydra-nft-marketplace/hydra/keys/cardano.skey
 TESTNET_MAGIC=1
+CARDANO_NODE_SOCKET_PATH=/home/rodrigo/workspace/hydra_test/cardano_preprod/sockets/node.socket
+OPERATOR_ADDRESS=<operator bech32 address>
 SCRIPT_ADDRESS=addr_test1wz8ku6f4pup2q35gcm5zlcl8467da4a7fmxsy3h8y7kna0q0thcrm
-SCRIPT_CBOR=<double-CBOR>
+SCRIPT_CBOR=<double-CBOR from plutus.json>
 TX_FEE=0
 ADMIN_SECRET=changeme
-```
-
-**`frontend/.env.local`:**
-```bash
-NEXT_PUBLIC_DEMO_POLICY_ID=8f6e69350f02a04688c6e82fe3e7aebcded7be4ecd0246e727ad3ebc
-NEXT_PUBLIC_ADMIN_KEY=changeme
+PROTOCOL_PARAMS_PATH=/home/rodrigo/hydra-nft-marketplace/hydra/keys/protocol-parameters.json
 ```
 
 ---
 
-## 9. Testing
+## 9. Demo Flow (Step by Step)
 
-### On-chain (Aiken) — 26 tests, all pass
+This is the complete end-to-end demo flow tested 2026-03-29:
 
-```bash
-cd contracts
-aiken check    # 26/26
-aiken build    # → plutus.json
-```
+### Phase 1 — Setup (one-time)
 
-### E2E suite
+1. Admin approves pepito's KYC at `/admin`
+2. Admin mints FarmerPass for pepito (L1 tx, manually via cardano-cli, pastes hash in admin panel)
+3. Pepito mints CropTokens at `/identity` → Crop tab → fills crop name + quantity → signs tx in wallet
 
-```bash
-make e2e-infra   # infrastructure checks (no NFT needed)
-make e2e         # full flow (requires real NFT in Head)
-```
+### Phase 2 — Commit (per Head session)
 
----
+4. Check Head status: `curl http://127.0.0.1:3000/api/health | jq .headStatus`
+5. If Idle: `curl -X POST http://127.0.0.1:3000/api/head/init`
+6. Wait for `Initializing` (~20s)
+7. Pepito goes to `/sell`, selects token, clicks **Commit al Head** → signs (partialSign)
+8. After commit tx on L1 (~60s): click **Abrir Head** → waits for `HeadIsOpen`
+9. Click **Dividir ADA** → splits operator ADA into 2 UTxOs
 
-## 10. Known Limitations
+### Phase 3 — Trade
 
-1. **Single-party Head.** Both participants use the same key. A real marketplace needs 2+ hydra-nodes.
-2. **Operator collateral.** Buy tx uses operator's UTxO as Plutus collateral — needs replenishing.
-3. **No NFT metadata.** `assets` table not auto-populated; no images/display names.
-4. **No CIP-30 wallet.** Sellers sign CBOR manually. No browser wallet integration.
-5. **In-memory idempotency store.** Lost on backend restart.
-6. **Zero-fee Head only.** `TX_FEE=0` requires `protocol-parameters-zero-fees.json`.
+10. Token now shows **"En el Head ✓"**
+11. Pepito fills price → **Publicar** → signs escrow tx in wallet
+12. Buyer goes to `/listings` → clicks Buy → backend submits buy tx to Hydra → instant confirmation
+13. Sale record created in DB; listing marked `sold`
 
----
+### Phase 4 — Close (end of demo)
 
-## 11. What Was Learned
-
-### Hydra
-- `Greetings` (not `HeadIsOpen`) is the correct reconnect recovery event.
-- `SnapshotConfirmed.snapshot.confirmedTransactions` is the reliable catch-up mechanism.
-- `GET /snapshot/utxo` is the ground truth after restart.
-
-### Aiken stdlib v3
-- `assets.add` is 4-arg; `VerificationKey(vkh)` not `VerificationKeyCredential`.
-- `use` imports must all be at the top of the file — no exceptions.
-- `fail` tests: body must evaluate to `False` or panic.
-
-### Express v5 + TypeScript
-- Route params typed as `string | string[]` — use `as string` cast.
-
-### Seller-funded escrow
-- Operator can build buy txs without buyer's key because all value is already in the escrow.
-
-### cardano-cli v10
-- `txid` returns JSON `{"txhash":"..."}` — always handle with try/catch.
+14. Admin sends Close from `/admin` (or `POST /api/admin/head/close`)
+15. Wait contestation period (180s in env, but Head was opened with 600s — check actual value)
+16. Admin sends Fanout → UTxOs returned to L1
 
 ---
 
-## 12. Project State (2026-03-28)
-
-### Complete and tested
-
-| Component | Status |
-|-----------|--------|
-| Listing lifecycle (create → escrow → active → buy/cancel) | ✅ implemented, typecheck clean |
-| Aiken contracts — 26 unit tests | ✅ all pass |
-| DB migrations 001, 002, 003 | ✅ auto-run on startup |
-| Farmer KYC API (register, status, approve, reject) | ✅ live on port 3000 |
-| Crop mint API (record intent, list) | ✅ live, but DB only — no L2 tx |
-| Frontend `/identity` page (KYC + Crops tabs) | ✅ typecheck clean |
-| Frontend `/admin` operator panel | ✅ typecheck clean |
-| State sync, session recovery | ✅ |
-| E2E infrastructure checks | ✅ |
-
-### Partial / pending
-
-| Component | Gap |
-|-----------|-----|
-| FarmerPass L1 mint from backend | The operator mints manually (cardano-cli) and pastes the tx hash into the admin panel. No backend endpoint builds/signs the L1 minting tx automatically. |
-| CropToken L2 mint tx | `POST /api/crops/mint` only records the intent in DB. It does **not** build or submit a Hydra transaction. The farmer's wallet never receives the actual tokens. |
-| `/sell` FarmerPass gate | The sell form shows to any connected wallet. It should check `GET /api/farmers/status/:address` and block non-approved farmers. |
-| Listing ↔ CropToken flow | After crop tokens are minted on L2, the farmer needs them in their wallet before they can list. The two steps (mint → list) are not yet connected in the UI. |
-| E2E full flow tests | Not run against a live Head with a real CropToken. |
-
----
-
-## 13. What's Missing — Prioritised
-
-### Priority 1 — Minimum for a working demo
-
-**A. CropToken L2 mint transaction** (`backend/src/api/farmers.ts`, `POST /api/crops/mint`)
-
-Currently saves to DB only. Needs to:
-1. Build a Hydra tx that mints `quantity` CropTokens under `crop_token_policy`
-2. Attach the FarmerPass UTxO as reference input
-3. Include a withdrawal from the `crop_token` verify script (or use the operator as cosigner)
-4. Submit via `HydraClient.submitTx()`
-5. Update `crop_mints.tx_hash` and `status` on `TxValid`
-
-**B. `/sell` FarmerPass gate** (`frontend/app/sell/SellForm.tsx`)
-
-Add a `useEffect` that calls `api.farmerStatus(address)` and shows a banner if not approved:
-```
-⚠ Necesitás un FarmerPass aprobado para publicar. Ir a Identidad →
-```
-
-### Priority 2 — Operator UX improvements
-
-**C. FarmerPass L1 mint from backend** (`backend/src/api/admin.ts`)
-
-Add a `POST /api/admin/farmers/:id/mint-pass` endpoint that:
-1. Gets the farmer's wallet address from `farmer_registrations`
-2. Calls `cardano-cli transaction build` on L1 (not Hydra) to mint the FarmerPass NFT
-3. Signs with the operator's key (`SKEY_PATH`)
-4. Submits via Blockfrost
-5. Stores the resulting tx hash in `farmer_pass_tx_hash` and sets `status = 'approved'`
-
-This replaces the current manual flow where the operator mints externally and pastes the hash.
-
-**D. Sell page language** — update title from "List an NFT" to "Publicar lote de cultivo".
-
-### Priority 3 — Production readiness
-
-- Replace `sleep(3000)` in E2E with polling
-- CIP-30 wallet integration (Eternl/Nami) for in-browser signing
-- NFT metadata indexer (populate `assets` table from Blockfrost)
-- Multi-party Hydra Head (2+ participants)
-- Docker Compose for backend + frontend + PostgreSQL
-
----
-
-## 14. Quick-Start Checklist
+## 10. Database Schema
 
 ```
-[ ] sudo service postgresql start
-[ ] ls /home/rodrigo/workspace/hydra_test/cardano_preprod/sockets/node.socket
-[ ] cd /home/rodrigo/hydra-nft-marketplace && make hydra-start
-[ ] (if Head not open) make hydra-init → bash hydra/scripts/commit.sh
-[ ] tmux new-session -s hydra-backend -d "cd backend && npm run dev"
-[ ] tmux new-session -s hydra-frontend -d "cd frontend && npm run dev -- --port 3001"
-[ ] curl http://localhost:3000/api/health | jq   → ok: true
-[ ] make e2e-infra
-[ ] open http://localhost:3001
+head_sessions        — one row per Hydra Head session
+listings             — draft→active→sold/cancelled/failed; stores escrow_tx_hash, escrow_utxo_ix
+sales                — confirmed purchases; hydra_tx_id set on TxValid
+tx_submissions       — audit log; request_id for idempotency
+hydra_events         — raw WS event log
+assets               — NFT metadata cache (not auto-populated)
+
+farmer_registrations — KYC; status: pending→approved/rejected; farmer_pass_tx_hash set on L1 mint
+crop_mints           — crop lot records; tx_hash set on L1 confirm
 ```
 
 ---
 
-## 15. Change Log
+## 11. What Is Still Incomplete
+
+| Gap | Priority | Notes |
+|-----|----------|-------|
+| FarmerPass auto-mint from backend | P2 | Operator currently pastes tx hash manually into admin panel |
+| CropToken burned on buy | P3 | Buy tx does not include a burn redeemer — tokens just move to buyer address. Fine for demo. |
+| Head session DB cleanup after fanout | P2 | `head_sessions` row stays `open` after fanout; should be updated to `closed` on `HeadIsFinalized` event |
+| E2E test with live Head | P2 | E2E suite tests infrastructure only; not run with real CropToken in Head |
+| Multi-party Head | P3 | Single-participant Head (operator only). Real marketplace needs 2+ nodes. |
+| NFT metadata | P3 | `assets` table empty; no images/display names |
+
+---
+
+## 12. Change Log
+
+### 2026-03-29 — Classic Commit + Buy Fix + Head Management
+
+#### Problem solved: incremental deposits broken
+- Investigated Hydra 1.2.0 incremental commit (`POST /commit` while Head Open)
+- Deposit tx confirmed on L1 but Hydra never emitted `CommitRecorded`
+- `GET /commits` always returned `[]`; `pendingDeposits: {}` throughout
+- Decision: abandon incremental deposits, use classic commit (pre-open) exclusively
+- Closed stuck Head (fanout after deadline), re-initialized fresh
+
+#### `backend/src/tx/cli.ts`
+- `buildBuyTx`: Added `buyerInputRef`, `buyerInputLovelace`, `escrowTokenQty`, `changeAddress`. Fixed change calculation. Added buyer `--tx-in` to cardano-cli command.
+- `buildEscrowTxUnsigned`: Added `inputQuantity?` param. Locks full token quantity at script.
+
+#### `backend/src/api/listings.ts`
+- `POST /listings`: Extracts `tokenQuantity` from Head UTxO snapshot; passes to `buildEscrowTxUnsigned`.
+- `POST /listings/:id/buy`: Finds 2 pure-ADA UTxOs (buyer input + collateral). Extracts escrow token qty. Passes all to `buildBuyTx`. Returns clear error if < 2 pure-ADA UTxOs available.
+
+#### `backend/src/api/head.ts`
+- Added `POST /init`: sends `{"tag":"Init"}`
+- Added `POST /collect`: sends `{"tag":"Collect"}`, awaits `HeadIsOpen`, records session in DB
+- Added `POST /split-ada`: intra-Head ADA split tx (operator key signs)
+
+#### `backend/src/api/farmers.ts`
+- `POST /crops/build-commit-tx`: Combined commit body (farmer token + operator ADA). Operator pre-signs server-side. Returns partially-signed CBOR for farmer's browser wallet (`partialSign=true`).
+
+#### `backend/src/hydra/client.ts`
+- Added `initHead()`, `collect()`, `awaitHeadOpen(timeoutMs)` methods
+- Added `case "HeadIsInitializing"` to `applyEvent()` to update `headStatus`
+
+#### `backend/src/types/hydra.ts`
+- Added `CollectCommand { tag: "Collect" }` to `HydraCommand` union
+
+#### `frontend/app/sell/SellForm.tsx`
+- Shows Head status badge (Idle / Initializing / Open)
+- Commit button only enabled when Head is `Initializing`
+- After commit: shows **"Abrir Head"** button that calls `POST /collect` and polls to Open
+- After Head open: shows **"Dividir ADA"** helper
+- Submit button disabled when Head is not Open
+
+#### `frontend/context/WalletContext.tsx` + `frontend/lib/wallet.ts`
+- `signTx(cbor, partialSign?)` — passes through to `wallet.signTx(cbor, partialSign)`
+- Used for combined-commit multi-sig flow
 
 ### 2026-03-28 — Farmer Identity System (Epic 13)
 
-#### Contracts
-- Added `farmer_pass.ak`: operator-controlled minting policy for FarmerPass NFTs. Token name = farmer PKH; exports `has_farmer_pass()` helper.
-- Added `crop_token.ak`: fungible CropToken minting policy. Mint requires FarmerPass as reference input + farmer signature. Burn by owner or operator.
-- Modified `listing.ak`: `quantity_of >= 1` (was `== 1`) to support fungible tokens. Updated `buy_nft_quantity_two` test from fail → pass.
-- **Total tests: 26 (up from 14), all pass.**
-
-#### Database
-- Migration `003_farmer_identity.sql`: added `farmer_status` enum, `farmer_registrations` table, `crop_mints` table.
-
-#### Backend
-- `farmerRepo.ts`: CRUD for farmer registrations and crop mints.
-- `farmers.ts`: `POST /api/farmers/register`, `GET /api/farmers/status/:address`, `POST /api/crops/mint`, `GET /api/crops/:address`.
-- `admin.ts`: added `GET /api/admin/farmers/pending`, `POST /api/admin/farmers/:id/approve`, `POST /api/admin/farmers/:id/reject`.
-
-#### Frontend
-- `/identity` page: two tabs — KYC form (sha256 computed in-browser, PII never sent to server) and Crop Mint form (gated behind approved FarmerPass).
-- `/admin` page: operator panel to review pending registrations, approve with FarmerPass tx hash, or reject with reason.
-- Navbar: added "Identidad" and "Admin" links; renamed "Sell" → "Vender".
-- `api.ts`: added `FarmerRegistration`, `CropMint` types and `farmerStatus`, `farmerRegister`, `cropMint`, `cropList` calls.
-- `frontend/.env.local`: added `NEXT_PUBLIC_ADMIN_KEY=changeme`.
+- `farmer_pass.ak`, `crop_token.ak` added; 26 tests total, all pass
+- `listing.ak`: `quantity >= 1` (was `== 1`)
+- Migration `003_farmer_identity.sql`, `farmerRepo.ts`, `farmers.ts`, admin endpoints
+- `/identity` and `/admin` frontend pages
+- `SellForm.tsx`: FarmerPass gate, plain-text crop name
 
 ### 2026-03-28 — Farmer-friendly sell form + migration fix
 
-- `SellForm.tsx`: replaced hex fields with plain-text crop name, quantity, and lot price. Auto-converts to UTF-8 hex. Policy ID from env var.
-- `002_production_indexes.sql`: fixed `created_at` → `submitted_at` column reference on `tx_submissions`.
+- `SellForm.tsx`: plain-text crop name → UTF-8 hex
+- `002_production_indexes.sql`: `created_at` → `submitted_at`

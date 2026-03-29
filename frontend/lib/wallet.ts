@@ -29,12 +29,13 @@ export async function getWalletAddress(wallet: BrowserWalletType): Promise<strin
   return wallet.getChangeAddress();
 }
 
-// Sign an unsigned tx CBOR with the connected wallet.
-// Returns the fully signed tx CBOR ready to submit.
+// Sign a tx CBOR with the connected wallet.
+// partialSign=true: wallet adds its witness without removing existing witnesses
+// (used for multi-sig txs where another party already signed).
 export async function signTransaction(
   wallet: BrowserWalletType,
-  unsignedTxCbor: string
+  unsignedTxCbor: string,
+  partialSign = false
 ): Promise<string> {
-  // partialSign=false: wallet signs the whole tx and returns signed CBOR
-  return wallet.signTx(unsignedTxCbor, false);
+  return wallet.signTx(unsignedTxCbor, partialSign);
 }
