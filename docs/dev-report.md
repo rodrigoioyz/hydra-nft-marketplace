@@ -249,6 +249,20 @@ When running bash commands from Windows via `wsl.exe -e`, Windows Git Bash can m
 
 `tx_submissions` has `submitted_at`, not `created_at`. Fixed index in `002_production_indexes.sql`.
 
+### 5.11 `NotEnoughFuel` on combined commit — Init tx sibling bug (CRITICAL)
+
+**Symptom:** `POST /api/crops/build-commit-tx` (combined commit of farmer CropToken + operator ADA) returned `NotEnoughFuel` from Hydra. Committing only the farmer's CropToken worked fine.
+
+**Root cause:** The Head's Init transaction (`0523c5629...`) produced two relevant UTxOs:
+- `#1` — the head state UTxO (at the Hydra HEAD script address — required input for every commit tx)
+- `#2` — the operator's ADA change (86 ADA at the operator's address)
+
+When the backend tried to commit `0523c5629...#2` as the operator's ADA contribution, Hydra built the commit tx with inputs `[0523c5629...#1 (head state), 0523c5629...#2 (being committed), 8ac9...#0 (farmer token)]`. Hydra could not find a fuel UTxO because the only "non-committed" UTxO from the same Init tx (`0523c5629...#1`) is already consumed as the head state input. Hydra's fuel selection logic fails when all sibling UTxOs of the Init tx are already used.
+
+**Fix:** Modified `build-commit-tx` to try operator UTxOs in descending ADA order, skipping any that cause `NotEnoughFuel`. The `0523c5629...#2` UTxO is skipped; `8fa4e8aa...#0` (44 ADA, from a different tx) is used as the committed operator ADA. Hydra then uses `0523c5629...#2` as fuel automatically.
+
+**Key insight:** A UTxO produced by the Init transaction **cannot be committed** to the Head — it will always trigger `NotEnoughFuel`. It can only be used as fuel.
+
 ---
 
 ## 6. Known Preprod State (2026-03-29)
@@ -290,11 +304,15 @@ persistence:      /home/rodrigo/hydra-nft-marketplace/hydra/data
 
 ### Known L1 UTxOs (last verified 2026-03-29)
 
-| Address | UTxO ref | Contents |
-|---------|----------|----------|
-| pepito | `8ac96ab6...#0` | 2 ADA + 1000 Maiz pepito (policyId `111da66...`) |
-| pepito | `9dfc152c...#0` | 2 ADA + 1000 coliflor pepito |
-| operator | `0523c562...#2` | ~86 ADA (pure ADA) |
+| Address | UTxO ref | Contents | Role |
+|---------|----------|----------|------|
+| pepito | `8ac96ab6...#0` | 2 ADA + 1000 Maiz pepito (policyId `111da66...`) | commit to Head |
+| pepito | `9dfc152c...#0` | 2 ADA + 1000 coliflor pepito | commit to Head |
+| operator | `0523c562...#2` | ~86 ADA (Init tx sibling — cannot be committed, use as fuel) | fuel only |
+| operator | `8fa4e8aa...#0` | ~44 ADA | commit to Head as operator ADA |
+| operator | `38701a96...#1` | ~7.8 ADA | spare fuel / collateral |
+
+**NOTE:** `0523c562...#2` is from the same transaction as the head state UTxO `0523c562...#1`. It **cannot** be committed to the Head (Hydra `NotEnoughFuel`). It can only be used as L1 fuel.
 
 Pepito's address: `addr_test1qrgff35ks084ej5va4y2cc88092rfcgcdwr4zjtcq238sv9edtserxw9vp4fe9a86wl9r3vm7nu6gw0z8z96akylkm6sy6xm6t`
 
@@ -519,6 +537,7 @@ crop_mints           — crop lot records; tx_hash set on L1 confirm
 
 #### `backend/src/api/farmers.ts`
 - `POST /crops/build-commit-tx`: Combined commit body (farmer token + operator ADA). Operator pre-signs server-side. Returns partially-signed CBOR for farmer's browser wallet (`partialSign=true`).
+- **2026-03-29 (session 2):** Fixed `NotEnoughFuel` — operator UTxO candidates are now tried in order; any that share the Init tx txHash (`0523c562...`) are skipped. `8fa4e8aa...#0` (44 ADA) is used as committed operator ADA; `0523c562...#2` becomes fuel automatically.
 
 #### `backend/src/hydra/client.ts`
 - Added `initHead()`, `collect()`, `awaitHeadOpen(timeoutMs)` methods

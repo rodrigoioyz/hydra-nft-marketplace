@@ -237,7 +237,11 @@ export function createCropsRouter(pool: Pool): Router {
     }
     const [tokenUtxoRef, tokenUtxoData] = tokenEntry;
 
-    // ── 2. Find operator's largest pure-ADA UTxO on L1 ───────────────────
+    // ── 2. Find operator's pure-ADA UTxOs on L1 ──────────────────────────
+    // Sort by value descending; we'll try each until Hydra accepts one.
+    // NOTE: Hydra cannot commit a UTxO whose txHash matches the head state
+    // UTxO (both created in the Init tx). We detect this by retrying on
+    // NotEnoughFuel responses.
     if (!config.operatorAddress) {
       return apiError(res, 503, "NO_OPERATOR_ADDRESS", "OPERATOR_ADDRESS not configured");
     }
@@ -251,20 +255,19 @@ export function createCropsRouter(pool: Pool): Router {
       referenceScript: unknown;
     }>;
 
-    const operatorEntry = Object.entries(operatorL1Utxos)
+    const operatorCandidates = Object.entries(operatorL1Utxos)
       .filter(([, u]) => {
         const keys = Object.keys(u.value).filter(k => k !== "lovelace");
         return keys.length === 0;
       })
       .sort((a, b) =>
         Number(BigInt(b[1].value.lovelace as number ?? 0) - BigInt(a[1].value.lovelace as number ?? 0))
-      )[0];
+      );
 
-    if (!operatorEntry) {
+    if (operatorCandidates.length === 0) {
       return apiError(res, 503, "NO_OPERATOR_UTXO",
         "No pure-ADA UTxO found at operator address on L1");
     }
-    const [operatorUtxoRef, operatorUtxoData] = operatorEntry;
 
     // ── 3. Build combined Hydra commit body ───────────────────────────────
     const toCommitEntry = (ref: string, u: typeof tokenUtxoData) => ({
@@ -277,22 +280,36 @@ export function createCropsRouter(pool: Pool): Router {
       value:           u.value,
     });
 
-    const commitBody: Record<string, unknown> = {
-      [tokenUtxoRef]:    toCommitEntry(tokenUtxoRef, tokenUtxoData),
-      [operatorUtxoRef]: toCommitEntry(operatorUtxoRef, operatorUtxoData),
-    };
+    // ── 4. Try each operator UTxO until Hydra accepts (no NotEnoughFuel) ──
+    let hydraData: { cborHex: string; txId: string; type: string } | null = null;
+    let operatorUtxoRef = "";
+    let operatorUtxoData = operatorCandidates[0][1];
 
-    // ── 4. Request unsigned commit tx from Hydra ──────────────────────────
-    const hydraRes = await fetch(`${config.hydraHttpUrl}/commit`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(commitBody),
-    });
-    if (!hydraRes.ok) {
+    for (const [candidateRef, candidateData] of operatorCandidates) {
+      const commitBody: Record<string, unknown> = {
+        [tokenUtxoRef]:   toCommitEntry(tokenUtxoRef, tokenUtxoData),
+        [candidateRef]:   toCommitEntry(candidateRef, candidateData),
+      };
+      const hydraRes = await fetch(`${config.hydraHttpUrl}/commit`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(commitBody),
+      });
       const text = await hydraRes.text();
-      return apiError(res, 502, "HYDRA_ERROR", `Hydra commit failed: ${text}`);
+      if (!hydraRes.ok || text.startsWith("NotEnoughFuel")) {
+        // This UTxO conflicts with the head state input — try next
+        continue;
+      }
+      hydraData = JSON.parse(text) as { cborHex: string; txId: string; type: string };
+      operatorUtxoRef  = candidateRef;
+      operatorUtxoData = candidateData;
+      break;
     }
-    const hydraData = await hydraRes.json() as { cborHex: string; txId: string; type: string };
+
+    if (!hydraData) {
+      return apiError(res, 502, "HYDRA_ERROR",
+        "All operator UTxOs caused NotEnoughFuel — Head may need re-init");
+    }
 
     // ── 5. Operator signs the tx server-side ──────────────────────────────
     // This adds the operator's witness for their ADA UTxO.
