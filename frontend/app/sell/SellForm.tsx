@@ -6,10 +6,23 @@ import { useWallet } from "@/context/WalletContext";
 import { useRouter } from "next/navigation";
 import type { FarmerRegistration, CropWalletAsset, HeadStatus } from "@/lib/api";
 
+function decodeHexToUtf8(hex: string): string {
+  try {
+    return decodeURIComponent(hex.replace(/../g, "%$&"));
+  } catch {
+    return hex;
+  }
+}
+
 // Token enriched with Head presence status
 interface TokenWithStatus extends CropWalletAsset {
   inHead: boolean;
 }
+
+// One-time recovery: operator-pre-signed cancel tx for tokens stuck in old escrow
+// Escrow UTxO: 72816af79328a075161c1249ea9f47106d4f0f653ed4d36d8d5df7aae8c276b3#0
+const RECOVER_TX_ID = "e6816bb9c9ac8dac90a45a9abb201938a4e426ee1e2203d20661faa62ca3e791";
+const RECOVER_CBOR  = "84a600d901028282582072816af79328a075161c1249ea9f47106d4f0f653ed4d36d8d5df7aae8c276b30082582078a07d5d05a11f6151bdfa3cf6e6d5b4597d100990dfb207d94d025db65e60d1000dd901028182582078a07d5d05a11f6151bdfa3cf6e6d5b4597d100990dfb207d94d025db65e60d101018282583900d094c69683cf5cca8ced48ac60e7795434e1186b8751497802a27830b96ae19199c5606a9c97a7d3be51c59bf4f9a439e2388baed89fb6f5821a001e8480a1581c111da6625fa277baf894d3c16f799349a44cd8713e55ac7c3c950c4da14b4d61697a2070657069746f1903e882581d609d939cdf9c295dfd77d0deb40767d27a19e8806372820f4ec85cf1a31a01280540021a000927c00ed9010281581cd094c69683cf5cca8ced48ac60e7795434e1186b8751497802a278300b58206a708ef8d3aec1150db2ab3a12e5d4409ab7b42238b945afc86573f7197ced1ba300d9010281825820afc39c66f12581cb70ad2de7858f270524553cd8c7f3f38cec36870ed8bbed3758405a62f1cbb1eca458a3ba10d81102ba8c36eb34ad2a32fcc01e0a205e7773047d71d526c719b98e94bc75c8107d45ebbdfaa4e87f58a10b55f52c294b9c414d0807d901028159031b59031801010029800aba2aba1aba0aab9faab9eaab9dab9a488888896600264653001300800198041804800cdc3a400530080024888966002600460106ea800e26466453001159800980098059baa0028cc004c03cc030dd500148c040c044c04400644646600200200644b30010018a508acc004c00cc04c00629462660040046028002807101148c040c0440064446466446600400400244b3001001801c4c8cc896600266e4401c00a2b30013371e00e00510018032026899802802980c8022026375c60240026eb4c04c004c054005013191919800800803112cc00400600713233225980099b910090028acc004cdc78048014400600c80a226600a00a603400880a0dd718098009bab301400130160014050297adef6c601480026e952000488888966002600e60226ea8036264b300198009bac300630133754017375c602c60266ea801e6eb4c058c05cc05cc05cc04cdd5003a444660100064b30013375e6034602e6ea8c068c05cdd500098031980c9ba90034bd7044cdc48014c004dd59804180b9baa001a44100a44100401d14a080a9198009bac300630133754017375c600860266ea801e6eb8c018c04cdd5003a444660100064b30013375e6034602e6ea8c068c05cdd500098031980c9ba90054bd7044c04260026eacc020c05cdd5000c00e004803a2941015229410111bae30153012375401b15980099199119801001000912cc00400629422b30013371e6eb8c06000400e2946266004004603200280990161bac301630173017301730173017301730173017301337540166eb8c054c048dd50034660026eb0c014c048dd50054dd7180a98091baa0069bae30033012375400d375c600a60246ea801922223300800425980099baf301a301737546034602e6ea8004c018cc064dd480225eb8226021300137566010602e6ea8006007002401d14a080a914a0808101022c805260166ea801e601e0069112cc004c01000a26464b30013015002802c590121bae3013001300f375401515980098040014566002601e6ea802a0071640411640348068601a601c0026e1d20003009375400716401c300800130033754011149a26cac800905a182000082d87a80821a002dc6c01a29b92700f5f6";
 
 export function SellForm() {
   const router = useRouter();
@@ -20,6 +33,9 @@ export function SellForm() {
   const [selected,   setSelected]   = useState<TokenWithStatus | null>(null);
   const [headStatus, setHeadStatus] = useState<HeadStatus | null>(null);
 
+  const [recoverState, setRecoverState] = useState<"idle" | "signing" | "submitting" | "done" | "error">("idle");
+  const [recoverError, setRecoverError] = useState<string | null>(null);
+
   const [quantity,     setQuantity]     = useState("");
   const [priceAda,     setPriceAda]     = useState("");
 
@@ -29,6 +45,7 @@ export function SellForm() {
   const [txId,         setTxId]         = useState("");
 
   // Commit flow
+  const [needsPartialSign, setNeedsPartialSign] = useState(false);
   const [committing,   setCommitting]   = useState(false);
   const [commitDone,   setCommitDone]   = useState<string | null>(null); // txHash
   // Collecting (opening the Head after commit)
@@ -55,22 +72,40 @@ export function SellForm() {
         fetch("/api/head/utxos").then((r) => r.json() as Promise<Record<string, { value: Record<string, unknown>; address: string }>>).catch(() => ({})),
       ]);
 
-      // Build a set of (policyId + assetNameHex) present in the Head at this address
-      const headTokens = new Set<string>();
+      // Tokens already in the Head at this address (may no longer appear on L1)
+      const headTokenMap = new Map<string, number>(); // "policyId.assetName" -> qty
       for (const u of Object.values(headUtxos)) {
         if (u.address !== addr) continue;
         for (const [pid, tokens] of Object.entries(u.value)) {
           if (pid === "lovelace") continue;
-          for (const assetName of Object.keys(tokens as Record<string, unknown>)) {
-            headTokens.add(`${pid}.${assetName}`);
+          for (const [assetName, qty] of Object.entries(tokens as Record<string, number>)) {
+            const key = `${pid}.${assetName}`;
+            headTokenMap.set(key, (headTokenMap.get(key) ?? 0) + qty);
           }
         }
       }
 
-      const enriched: TokenWithStatus[] = walletAssets.map((t) => ({
-        ...t,
-        inHead: headTokens.has(`${t.policyId}.${t.assetNameHex}`),
-      }));
+      // Start with L1 wallet tokens, marking those also in Head
+      const seen = new Set<string>();
+      const enriched: TokenWithStatus[] = walletAssets.map((t) => {
+        const key = `${t.policyId}.${t.assetNameHex}`;
+        seen.add(key);
+        return { ...t, inHead: headTokenMap.has(key) };
+      });
+
+      // Add tokens that are ONLY in the Head (already committed, no longer on L1)
+      for (const [key, qty] of headTokenMap.entries()) {
+        if (seen.has(key)) continue;
+        const [policyId, assetNameHex] = key.split(".");
+        enriched.push({
+          policyId,
+          assetNameHex,
+          assetName: decodeHexToUtf8(assetNameHex),
+          quantity: qty,
+          inHead: true,
+        });
+      }
+
       setTokens(enriched);
       if (enriched.length === 1) setSelected(enriched[0]);
     } catch {
@@ -94,8 +129,29 @@ export function SellForm() {
   }, [address, loadTokens, loadHeadStatus]);
 
   const farmerApproved = farmer !== "loading" && farmer?.status === "approved";
-  const headIsOpen = headStatus?.status === "Open";
-  const headIsInitializing = headStatus?.status === "Initializing";
+  const headIsOpen = headStatus?.status?.toLowerCase() === "open";
+  const headIsInitializing = headStatus?.status?.toLowerCase() === "initializing";
+
+  // ── Recover tokens stuck in old escrow ────────────────────────────────────
+  async function handleRecover() {
+    setRecoverState("signing"); setRecoverError(null);
+    try {
+      const fullySigned = await signTx(RECOVER_CBOR, true);
+      setRecoverState("submitting");
+      const r = await fetch("/api/head/submit-raw", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signedTxCbor: fullySigned, txId: RECOVER_TX_ID }),
+      });
+      const data = await r.json() as { ok?: boolean; error?: string; message?: string };
+      if (!r.ok) throw new Error(data.message ?? data.error ?? `HTTP ${r.status}`);
+      setRecoverState("done");
+      if (address) setTimeout(() => { void loadTokens(address); }, 3000);
+    } catch (e) {
+      setRecoverError(e instanceof Error ? e.message : "Error al recuperar");
+      setRecoverState("error");
+    }
+  }
 
   // ── Commit to Head (classic commit while Head is Initializing) ─────────────
   async function handleCommit() {
@@ -181,6 +237,7 @@ export function SellForm() {
       setListingId(result.listingId);
       setEscrowTxCbor(result.escrowTxCbor);
       setTxId(result.txId);
+      setNeedsPartialSign(result.needsPartialSign ?? false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al crear listing");
     } finally {
@@ -193,7 +250,7 @@ export function SellForm() {
     e.preventDefault(); if (!listingId) return;
     setLoading(true); setError(null);
     try {
-      const signedCbor = await signTx(escrowTxCbor);
+      const signedCbor = await signTx(escrowTxCbor, needsPartialSign);
       await api.escrowConfirm(listingId, { signedTxCbor: signedCbor, txId });
       setSuccess("✓ Listing activo. Redirigiendo…");
       setTimeout(() => router.push(`/listings/${listingId}`), 1500);
@@ -260,8 +317,51 @@ export function SellForm() {
             ? "border-blue-800 bg-blue-950 text-blue-300"
             : "border-gray-700 bg-gray-800 text-gray-400"
         }`}>
-          <span>Hydra Head: <strong>{headStatus.status}</strong></span>
+          <span>
+            Hydra Head:{" "}
+            <strong>
+              {headIsOpen
+                ? "Abierto ✓"
+                : headIsInitializing
+                ? "Listo para commit"
+                : headStatus.status}
+            </strong>
+            {headIsInitializing && (
+              <span className="ml-2 text-xs font-normal opacity-75">
+                — seleccioná tu token y hacé commit
+              </span>
+            )}
+          </span>
           <button type="button" onClick={loadHeadStatus} className="text-xs opacity-70 hover:opacity-100">↺</button>
+        </div>
+      )}
+
+      {/* Recover tokens stuck in old escrow (one-time) */}
+      {headIsOpen && recoverState !== "done" && (
+        <div className="rounded-lg border border-orange-800 bg-orange-950 p-4 space-y-2">
+          <p className="text-sm text-orange-200 font-medium">Tokens bloqueados en escrow antiguo</p>
+          <p className="text-xs text-orange-400">
+            1000 Maiz pepito quedaron en un contrato viejo. Firmá esta tx para recuperarlos al Head.
+          </p>
+          {recoverError && <p className="text-sm text-red-400">{recoverError}</p>}
+          {recoverState === "done" && (
+            <p className="text-sm text-green-400">✓ Tokens recuperados. Actualizando…</p>
+          )}
+          <button
+            type="button"
+            onClick={handleRecover}
+            disabled={recoverState === "signing" || recoverState === "submitting" || !address}
+            className="w-full rounded-lg bg-orange-700 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50"
+          >
+            {recoverState === "signing"    ? "Esperando firma de billetera…"
+              : recoverState === "submitting" ? "Enviando al Head…"
+              : "Recuperar 1000 Maiz pepito"}
+          </button>
+        </div>
+      )}
+      {recoverState === "done" && (
+        <div className="rounded-lg border border-green-800 bg-green-950 p-3 text-sm text-green-300">
+          ✓ Tokens recuperados al Head. Presioná <strong>Actualizar</strong> para verlos.
         </div>
       )}
 

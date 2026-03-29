@@ -2,6 +2,7 @@
 // POST /api/head/init     — send Init command to Hydra node
 // POST /api/head/collect  — send Collect command to open Head after all commits
 // POST /api/head/split-ada — split operator's largest pure-ADA UTxO inside Head
+// POST /api/head/submit-raw — submit a pre-signed tx CBOR directly to Hydra
 
 import { Router } from "express";
 import { asyncHandler, apiError } from "./middleware";
@@ -129,6 +130,26 @@ export function createHeadRouter(pool: Pool, hydra: HydraClient): Router {
     }
 
     res.json({ ok: true, txId: tx.txId, splitLovelace: splitLovelace.toString() });
+  }));
+
+  // POST /api/head/submit-raw — accept a fully-signed tx CBOR and submit to Hydra
+  // Body: { signedTxCbor: string, txId: string }
+  router.post("/submit-raw", asyncHandler(async (req, res) => {
+    const { signedTxCbor, txId } = req.body as { signedTxCbor?: string; txId?: string };
+    if (!signedTxCbor || !txId) {
+      return void apiError(res, 400, "invalid_request", "Missing signedTxCbor or txId");
+    }
+    if (!hydra.isOpen()) {
+      return void apiError(res, 503, "head_not_open", "Hydra Head is not open");
+    }
+    hydra.submitTx(signedTxCbor, "Tx ConwayEra");
+    try {
+      await hydra.awaitTxConfirmation(txId, 30_000);
+      res.json({ ok: true, status: "confirmed", txId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return void apiError(res, 502, "hydra_tx_failed", msg);
+    }
   }));
 
   return router;

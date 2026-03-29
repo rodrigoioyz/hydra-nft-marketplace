@@ -1,19 +1,18 @@
 # Hydra NFT Marketplace
 
-A fixed-price NFT marketplace on **Cardano** where trades happen inside a **Hydra Head** — Cardano's Layer 2 solution for instant, fee-free transactions.
+A fixed-price NFT marketplace on **Cardano** where trades happen inside a **Hydra Head** — Cardano's Layer 2 for instant, fee-free transactions.
 
 ---
 
 ## What is this?
 
-On regular Cardano (Layer 1), every transaction takes ~20 seconds to confirm and costs a small fee. For a marketplace doing many trades, that adds up.
+On Cardano L1, every transaction takes ~20 seconds and costs a small fee. This project moves trading activity into a **Hydra Head** — a private payment channel where:
 
-This project moves the trading activity into a **Hydra Head** — a private payment channel between participants where:
 - Transactions confirm **instantly** (milliseconds)
-- Fees are **zero**
-- Everything is still secured by Cardano's cryptography
+- Fees are **zero** inside the Head
+- Everything is secured by Cardano's cryptography
 
-When trading is done, the final state is settled back on-chain.
+When trading is done, the final state settles back on-chain via fanout.
 
 ---
 
@@ -23,7 +22,7 @@ When trading is done, the final state is settled back on-chain.
 Seller                         Operator (backend)               Buyer
   |                                    |                           |
   |-- Lists NFT ---------------------->|                           |
-  |   (sends NFT + ADA to escrow)      |                           |
+  |   (signs escrow tx inside Head)    |                           |
   |                                    |<-- Browse listings -------|
   |                                    |<-- Buy NFT ---------------|
   |                                    |   (instant Hydra tx)      |
@@ -31,10 +30,9 @@ Seller                         Operator (backend)               Buyer
   |                                    |--- NFT delivered -------->|
 ```
 
-1. **Seller** lists an NFT by depositing it (plus price in ADA) into a smart contract escrow
-2. **Buyer** clicks Buy — the backend builds and submits a transaction inside the Hydra Head
-3. The trade settles **instantly** — seller gets ADA, buyer gets NFT
-4. No waiting, no fees inside the Head
+1. **Seller** locks their NFT into a smart contract escrow inside the Hydra Head
+2. **Buyer** clicks Buy — the backend builds and submits an L2 transaction
+3. The trade settles **instantly** — seller gets ADA, buyer gets NFT — no fees
 
 ---
 
@@ -43,11 +41,10 @@ Seller                         Operator (backend)               Buyer
 | Layer | Technology |
 |---|---|
 | Smart contract | [Aiken](https://aiken-lang.org) (Plutus v3) |
-| Backend | Node.js + Express + TypeScript |
-| Database | PostgreSQL |
+| Backend | Node.js 22 + Express + TypeScript |
+| Database | PostgreSQL 15+ |
 | Frontend | Next.js 14 + Tailwind CSS |
-| Wallet | CIP-30 (Eternl, Nami, Lace) via MeshSDK |
-| Oracle | Cardano preprod testnet |
+| Wallet | CIP-30 (Eternl, Nami, Lace) |
 | L2 | [Hydra Head](https://hydra.family) v1.2.0 |
 
 ---
@@ -58,23 +55,19 @@ Seller                         Operator (backend)               Buyer
 hydra-nft-marketplace/
 ├── contracts/          Aiken smart contract (listing validator)
 ├── backend/            Express API — listing, buy, cancel flows
+│   ├── src/
+│   └── .env.example    ← copy to .env and fill in your values
 ├── frontend/           Next.js 14 app — browse, sell, buy, cancel
-├── hydra/              Hydra node config, keys, scripts
-├── e2e/                End-to-end test suite
-└── docs/               Architecture, specs, dev report
+├── hydra/
+│   ├── config/
+│   │   ├── .env.example  ← copy to .env and fill in your paths
+│   │   └── protocol-parameters-zero-fees.json
+│   ├── keys/           operator keys (generated locally, never committed)
+│   ├── scripts/        node lifecycle scripts
+│   └── Makefile        shortcuts: make start / stop / status / logs
+├── docs/               architecture, API spec, dev report
+└── e2e/                end-to-end tests
 ```
-
----
-
-## Smart contract
-
-The Aiken validator (`contracts/validators/listing.ak`) enforces three rules:
-
-- **List** — NFT + price locked in escrow, seller address recorded
-- **Buy** — buyer sends correct ADA, NFT released to buyer, ADA to seller
-- **Cancel** — only the original seller can cancel and reclaim the NFT
-
-All buy/cancel transactions execute **inside the Hydra Head** — instant and fee-free.
 
 ---
 
@@ -82,98 +75,248 @@ All buy/cancel transactions execute **inside the Hydra Head** — instant and fe
 
 ### Prerequisites
 
-- [Cardano node](https://github.com/IntersectMBO/cardano-node) (preprod)
-- [Hydra node](https://hydra.family) v1.2.0
-- [Aiken](https://aiken-lang.org) (for contract compilation)
-- Node.js 20+
-- PostgreSQL
+| Tool | Version | Notes |
+|---|---|---|
+| [cardano-node](https://github.com/IntersectMBO/cardano-node) | 10.x | synced to preprod |
+| [hydra-node](https://hydra.family/head-protocol/docs/getting-started) | 1.2.0 | |
+| [aiken](https://aiken-lang.org/installation-instructions) | 1.1.x | contract compilation |
+| Node.js | 20+ | |
+| PostgreSQL | 15+ | |
 
-### 1. Configure environment
+---
+
+### Step 1 — Generate operator keys
+
+The **operator** is the backend's on-chain identity. It funds the Hydra Head and co-signs transactions. Generate a fresh key pair:
 
 ```bash
-cp backend/.env.example backend/.env
-cp hydra/config/.env.example hydra/config/.env
-# Fill in your paths, keys, and Blockfrost API key
+# Cardano payment key pair
+cardano-cli address key-gen \
+  --normal-key \
+  --signing-key-file  hydra/keys/cardano.skey \
+  --verification-key-file hydra/keys/cardano.vkey
+
+# Derive the operator address (preprod)
+cardano-cli address build \
+  --payment-verification-key-file hydra/keys/cardano.vkey \
+  --testnet-magic 1 \
+  --out-file hydra/keys/cardano.addr
+
+# Hydra key pair
+hydra-node gen-hydra-key --output-file hydra/keys/hydra
 ```
 
-### 2. Compile the contract
+> **Security:** `hydra/keys/*.skey` and `hydra/keys/*.sk` are listed in `.gitignore` and will never be committed. Back them up somewhere safe outside the repo.
+
+Fund `hydra/keys/cardano.addr` with test ADA from the [preprod faucet](https://docs.cardano.org/cardano-testnets/tools/faucet/) — at least **50 ADA** to commit into the Head.
+
+---
+
+### Step 2 — Configure environment files
+
+```bash
+# Backend
+cp backend/.env.example backend/.env
+
+# Hydra node
+cp hydra/config/.env.example hydra/config/.env
+```
+
+Edit each file — the comments inside explain every variable. Key things to fill in:
+
+**`backend/.env`**
+- `BLOCKFROST_PROJECT_ID` — free key from [blockfrost.io](https://blockfrost.io)
+- `CARDANO_CLI_PATH` — absolute path to your `cardano-cli` binary
+- `SKEY_PATH` — absolute path to `hydra/keys/cardano.skey`
+- `CARDANO_NODE_SOCKET_PATH` — path to the running cardano-node socket
+- `OPERATOR_ADDRESS` — contents of `hydra/keys/cardano.addr`
+- `SCRIPT_ADDRESS`, `SCRIPT_CBOR` — derived after compiling the contract (Step 4)
+
+**`hydra/config/.env`**
+- `HYDRA_BIN`, `CARDANO_CLI` — paths to installed binaries
+- `NODE_SOCKET` — path to the cardano-node socket
+- `MARKETPLACE_DIR` — absolute path to this repository root
+
+---
+
+### Step 3 — Set up the database
+
+```bash
+# Create user + database
+psql -U postgres <<'SQL'
+CREATE USER marketplace WITH PASSWORD 'marketplace';
+CREATE DATABASE marketplace OWNER marketplace;
+SQL
+
+# Run migrations
+psql -U marketplace -d marketplace -f backend/src/db/schema.sql
+```
+
+---
+
+### Step 4 — Compile the contract
 
 ```bash
 cd contracts
-aiken build        # outputs plutus.json
-aiken check        # run all tests (14 tests)
+aiken build        # compiles to contracts/plutus.json
+aiken check        # run all tests
 ```
 
-Copy `compiledCode` from `plutus.json` into `SCRIPT_CBOR` in `backend/.env`.
+The compiled UPLC lives in `contracts/plutus.json` under `validators[0].compiledCode`.
+You need to **double-CBOR encode** it for `cardano-cli` and the backend:
 
-### 3. Start the backend
+```bash
+# Quick helper (Node.js)
+node -e "
+const raw = require('./contracts/plutus.json').validators[0].compiledCode;
+// raw is already single-CBOR; wrap in an outer CBOR byte-string
+const len = raw.length / 2;
+const prefix = len <= 0x17   ? (0x40 + len).toString(16).padStart(2,'0')
+             : len <= 0xff   ? '58' + len.toString(16).padStart(2,'0')
+             : len <= 0xffff ? '59' + len.toString(16).padStart(4,'0')
+             :                 '5a' + len.toString(16).padStart(8,'0');
+console.log(prefix + raw);
+"
+```
 
+Paste the output into `SCRIPT_CBOR` in `backend/.env`.
+
+To derive `SCRIPT_ADDRESS`, submit the double-CBOR script to `cardano-cli`:
+
+```bash
+# Save the double-CBOR as a .plutus file
+echo '{"type":"PlutusScriptV3","description":"","cborHex":"<SCRIPT_CBOR>"}' > /tmp/listing.plutus
+
+cardano-cli latest address build \
+  --payment-script-file /tmp/listing.plutus \
+  --testnet-magic 1
+# → addr_test1w...  (paste into SCRIPT_ADDRESS in backend/.env)
+```
+
+---
+
+### Step 5 — Install dependencies
+
+```bash
+cd backend  && npm install
+cd ../frontend && npm install
+```
+
+---
+
+### Step 6 — Start all services
+
+Start each in a separate terminal (or tmux pane):
+
+**Terminal 1 — Cardano node** (skip if already synced)
+```bash
+# however you normally run your preprod node
+cardano-node run --config ... --socket-path ...
+```
+
+**Terminal 2 — Hydra node**
+```bash
+cd hydra
+make start          # starts in a tmux session named 'hydra-marketplace'
+make logs           # tail the logs
+make status         # health check
+```
+
+**Terminal 3 — Backend**
 ```bash
 cd backend
-npm install
-cp .env.example .env   # fill in values
-npx tsx src/index.ts
-# Listens on http://localhost:3000
+npm run dev         # tsx watch — auto-reloads on file changes
+# Listening on http://localhost:3000
 ```
 
-### 4. Start the frontend
-
+**Terminal 4 — Frontend**
 ```bash
 cd frontend
-npm install
-npm run dev
-# Opens on http://localhost:3001
+npm run dev         # Next.js dev server
+# Open http://localhost:3001
 ```
 
-### 5. Connect a wallet
-
-Open the app, click **Connect Wallet**, and choose Eternl, Nami, or Lace. Your address auto-fills in all forms.
+Confirm everything is up:
+```bash
+curl http://localhost:3000/api/head/status   # {"status":"Open",...}
+curl http://localhost:4001/snapshot/utxo     # UTxO set in the Head
+```
 
 ---
 
-## Flows
+### Step 7 — Open the Hydra Head
 
-### List an NFT
-1. Go to **List NFT**
-2. Enter policy ID, asset name, and price
-3. Click **Create Listing** — wallet signs the escrow transaction
-4. Once confirmed on-chain, the listing goes live
+The Head must be opened once before trading can begin. This is a one-time L1 operation.
 
-### Buy an NFT
-1. Browse active listings, click on one
-2. Click **Buy** — the backend submits an instant Hydra transaction
-3. Done — NFT is yours, seller gets ADA
+1. **Init** — sends the `Init` command and creates the on-chain Head datum
+   ```bash
+   curl -X POST http://localhost:3000/api/head/init
+   ```
 
-### Cancel a listing
-1. Open your listing
-2. Click **Cancel** — wallet signs the cancel transaction
-3. NFT returns to your wallet
+2. **Commit** — each participant commits funds into the Head
+   ```bash
+   cd hydra && make commit            # commits 50 ADA from the operator
+   ```
+   Sellers commit their NFTs + a small ADA buffer via the frontend Sell page (classic commit flow).
+
+3. **Collect** — opens the Head once all commits are on-chain
+   ```bash
+   curl -X POST http://localhost:3000/api/head/collect
+   ```
+   Or click **Abrir Head** on the frontend Sell page.
+
+4. **Split ADA** — prepare collateral UTxOs for buy transactions
+   ```bash
+   curl -X POST http://localhost:3000/api/head/split-ada
+   ```
+
+The Head is now open. Sellers can list NFTs and buyers can purchase them instantly.
 
 ---
 
-## Key design decisions
+## Hydra Head — quick reference
 
-**Seller-funded escrow** — The escrow UTxO holds both the NFT and the price in ADA. The operator backend can execute the buy without needing to touch any buyer-owned UTxO. This avoids UTxO contention.
-
-**Zero-fee Hydra params** — The Hydra Head is started with `protocol-parameters-zero-fees.json`, so all trades inside the Head cost nothing.
-
-**Operator-signed buy** — The backend (operator) signs buy transactions. The buyer just provides their address; no wallet signing needed for the buy flow.
+| Command | What it does |
+|---|---|
+| `make start` | Start hydra-node in a tmux session |
+| `make stop` | Stop the node |
+| `make restart` | Stop + start |
+| `make status` | Show process, API health, UTxO count, wallet balance |
+| `make logs` | Tail the node logs |
+| `make snapshot` | Print the current UTxO set as JSON |
+| `make check` | Verify all prerequisites (binaries, socket, keys) |
 
 ---
 
-## Contract values (preprod)
+## Smart contract
+
+The Aiken validator (`contracts/validators/listing.ak`) enforces three spending paths:
+
+| Redeemer | Who can execute | Condition |
+|---|---|---|
+| `Buy` | Anyone | Buyer sends correct ADA; NFT released to buyer; ADA to seller |
+| `Cancel` | Seller only | Seller's signature required; NFT returned |
+| `Update` | Seller only | Price update while NFT stays in escrow |
+
+All transactions execute inside the Hydra Head — instant and fee-free.
+
+---
+
+## Contract values (preprod, current deployment)
 
 ```
-Script hash:    8f6e69350f02a04688c6e82fe3e7aebcded7be4ecd0246e727ad3ebc
-Script address: addr_test1wz8ku6f4pup2q35gcm5zlcl8467da4a7fmxsy3h8y7kna0q0thcrm
-Hydra Head ID:  d59f9af876aac5490673b2824481fd7a475c134e477a303784b02043
+Script hash:    2d7821003f93368a1ffd1440e87b2f5da938b7b87b99c846ea1e6e88
+Script address: addr_test1wrzxkkq3p0w40hpn94dldxjkttrddvqed4e0xhvr4xcsrtqv640py
+Hydra Head ID:  94dac729cf5ad21960639e070612328d1be7d0603aec0a27d71ca30c
 ```
+
+> These are **derived public values** — the script hash and address are safe to share. The Head ID identifies the on-chain Head datum.
 
 ---
 
 ## Documentation
 
-- [`docs/dev-report.md`](docs/dev-report.md) — full development report, all bugs fixed, testing guide
+- [`docs/dev-report.md`](docs/dev-report.md) — full development log, all bugs fixed, testing guide
 - [`docs/architecture.md`](docs/architecture.md) — system architecture
 - [`docs/spec-validator.md`](docs/spec-validator.md) — smart contract specification
 - [`docs/spec-api.md`](docs/spec-api.md) — REST API reference

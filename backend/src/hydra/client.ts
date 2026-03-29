@@ -175,11 +175,11 @@ export class HydraClient extends EventEmitter {
     switch (event.tag) {
       case "TxValid": {
         const e = event as TxValidEvent;
-        return `txId=${e.transaction.id}`;
+        return `txId=${e.transaction?.id ?? "?"}`;
       }
       case "TxInvalid": {
         const e = event as TxInvalidEvent;
-        return `txId=${e.transaction.id} reason=${e.validationError.reason}`;
+        return `txId=${e.transaction?.id ?? "?"} reason=${e.validationError?.reason ?? "?"}`;
       }
       case "SnapshotConfirmed": {
         const e = event as SnapshotConfirmedEvent;
@@ -231,12 +231,12 @@ export class HydraClient extends EventEmitter {
       }, timeoutMs);
 
       const onValid = (event: TxValidEvent) => {
-        if (event.transaction.id === txId) { cleanup(); resolve(event); }
+        if (event.transaction?.id === txId) { cleanup(); resolve(event); }
       };
       const onInvalid = (event: TxInvalidEvent) => {
-        if (event.transaction.id === txId) {
+        if (event.transaction?.id === txId) {
           cleanup();
-          reject(new Error(`TxInvalid: ${event.validationError.reason}`));
+          reject(new Error(`TxInvalid: ${event.validationError?.reason ?? "unknown"}`));
         }
       };
 

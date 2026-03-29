@@ -131,19 +131,23 @@ export class CardanoCliBuilder {
         `but have ${opts.escrowLovelace + opts.buyerInputLovelace}`
       );
 
+      const protocolParamsFile = process.env.PROTOCOL_PARAMS_PATH
+        ?? "/home/rodrigo/hydra-nft-marketplace/hydra/keys/protocol-parameters.json";
+
       this.cli(
         `latest transaction build-raw` +
         ` --tx-in ${opts.escrowRef}` +
         ` --tx-in-script-file ${scriptFile}` +
         ` --tx-in-inline-datum-present` +
         ` --tx-in-redeemer-file ${redeemerFile}` +
+        ` --tx-in-execution-units "(700000000,3000000)"` +
         ` --tx-in ${opts.buyerInputRef}` +
         ` --tx-in-collateral ${opts.collateralRef}` +
         ` --tx-out ${opts.sellerAddress}+${opts.priceLovelace}` +
         ` --tx-out "${opts.buyerAddress}+${nftValue}"` +
         (change > 0n ? ` --tx-out ${opts.changeAddress}+${change}` : "") +
         ` --fee ${opts.fee}` +
-        ` --protocol-params-file ${process.env.PROTOCOL_PARAMS_PATH ?? ""}` +
+        ` --protocol-params-file ${protocolParamsFile}` +
         ` --out-file ${unsigned}`
       );
 
@@ -241,17 +245,22 @@ export class CardanoCliBuilder {
       const change    = opts.escrowLovelace - minAda - opts.fee;
       if (change < 0n) throw new Error("Insufficient lovelace for cancel tx");
 
+      const protocolParamsFile = process.env.PROTOCOL_PARAMS_PATH
+        ?? "/home/rodrigo/hydra-nft-marketplace/hydra/keys/protocol-parameters.json";
+
       this.cli(
         `latest transaction build-raw` +
         ` --tx-in ${opts.escrowRef}` +
         ` --tx-in-script-file ${scriptFile}` +
         ` --tx-in-inline-datum-present` +
         ` --tx-in-redeemer-file ${redeemerFile}` +
+        ` --tx-in-execution-units "(700000000,3000000)"` +
         ` --tx-in-collateral ${opts.collateralRef}` +
         ` --tx-out "${opts.sellerAddress}+${nftValue}"` +
         (change > 0n ? ` --tx-out ${opts.sellerAddress}+${change}` : "") +
         ` --required-signer-hash ${opts.sellerVkh}` +
         ` --fee ${opts.fee}` +
+        ` --protocol-params-file ${protocolParamsFile}` +
         ` --out-file ${unsigned}`
       );
 
@@ -277,16 +286,20 @@ export class CardanoCliBuilder {
   // Returns unsigned CBOR — the frontend wallet adds the vkey witness.
 
   buildEscrowTxUnsigned(opts: {
-    inputRef:       string;   // "txhash#ix" of seller's NFT UTxO in Head
-    inputLovelace:  bigint;
-    inputUnit:      string;   // policyId + assetName (hex)
-    inputQuantity?: bigint;   // token quantity to lock at script (default 1)
-    sellerAddress:  string;
-    sellerVkh:      string;   // payment key hash (28-byte hex)
-    scriptAddress:  string;   // compiled listing validator address
-    priceLovelace:  bigint;
-    minLovelace:    bigint;   // min ADA to send to script UTxO
-    fee:            bigint;
+    inputRef:          string;   // "txhash#ix" of seller's NFT UTxO in Head
+    inputLovelace:     bigint;
+    inputUnit:         string;   // policyId + assetName (hex)
+    inputQuantity?:    bigint;   // token quantity to lock at script (default 1)
+    sellerAddress:     string;
+    sellerVkh:         string;   // payment key hash (28-byte hex)
+    scriptAddress:     string;   // compiled listing validator address
+    priceLovelace:     bigint;
+    minLovelace:       bigint;   // min ADA to send to script UTxO
+    fee:               bigint;
+    // Optional operator fee input (needed when seller UTxO has no spare ADA for fees)
+    feeInputRef?:      string;
+    feeInputLovelace?: bigint;
+    feeChangeAddress?: string;
   }): BuiltTx {
     const dir = this.tmp();
     try {
@@ -296,8 +309,13 @@ export class CardanoCliBuilder {
       const policyId    = opts.inputUnit.slice(0, 56);
       const assetName   = opts.inputUnit.slice(56);
       const tokenQty    = opts.inputQuantity ?? 1n;
-      const change      = opts.inputLovelace - opts.minLovelace - opts.fee;
-      if (change < 0n) throw new Error("Insufficient lovelace for escrow tx");
+
+      // If a fee input is provided, the operator covers the fee; seller gets exact change
+      const hasFeeInput = opts.feeInputRef && opts.feeInputLovelace != null;
+      const sellerChange = opts.inputLovelace - opts.minLovelace - (hasFeeInput ? 0n : opts.fee);
+      if (sellerChange < 0n) throw new Error("Insufficient lovelace for escrow tx");
+      const operatorChange = hasFeeInput ? (opts.feeInputLovelace! - opts.fee) : 0n;
+      if (hasFeeInput && operatorChange < 0n) throw new Error("Fee input too small to cover fee");
 
       // ListingDatum as cardano-cli detailed-schema JSON
       writeFileSync(datumFile, JSON.stringify({
@@ -315,9 +333,11 @@ export class CardanoCliBuilder {
       this.cli(
         `latest transaction build-raw` +
         ` --tx-in ${opts.inputRef}` +
+        (hasFeeInput ? ` --tx-in ${opts.feeInputRef}` : "") +
         ` --tx-out "${opts.scriptAddress}+${nftValue}"` +
         ` --tx-out-inline-datum-file ${datumFile}` +
-        (change > 0n ? ` --tx-out ${opts.sellerAddress}+${change}` : "") +
+        (sellerChange > 0n ? ` --tx-out ${opts.sellerAddress}+${sellerChange}` : "") +
+        (hasFeeInput && operatorChange > 0n ? ` --tx-out ${opts.feeChangeAddress}+${operatorChange}` : "") +
         ` --fee ${opts.fee}` +
         ` --out-file ${unsigned}`
       );
@@ -381,6 +401,26 @@ export class CardanoCliBuilder {
   private cli(args: string): string {
     const cmd = `${this.cfg.cardanoCliPath} ${args}`;
     return execSync(cmd, { encoding: "utf8" });
+  }
+
+  // Sign a tx given its CBOR hex (returns signed CBOR hex)
+  signTx(cborHex: string, type = "Tx ConwayEra"): string {
+    const dir = this.tmp();
+    try {
+      const unsignedFile = join(dir, "tx.unsigned.json");
+      const signedFile   = join(dir, "tx.signed.json");
+      writeFileSync(unsignedFile, JSON.stringify({ type, description: "", cborHex }));
+      this.cli(
+        `latest transaction sign` +
+        ` --tx-file ${unsignedFile}` +
+        ` --signing-key-file ${this.cfg.skeyPath}` +
+        ` --testnet-magic ${this.cfg.testnetMagic}` +
+        ` --out-file ${signedFile}`
+      );
+      return (JSON.parse(readFileSync(signedFile, "utf8")) as { cborHex: string }).cborHex;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   private sign(unsignedPath: string, signedPath: string): BuiltTx {
