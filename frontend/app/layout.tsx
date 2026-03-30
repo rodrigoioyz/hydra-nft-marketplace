@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Navbar } from "@/components/Navbar";
 import { WalletProvider } from "@/context/WalletContext";
+import { ToastProvider } from "@/components/ToastProvider";
 
 export const metadata: Metadata = {
   title: "Hydra NFT Marketplace",
@@ -13,8 +14,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <WalletProvider>
-          <Navbar />
-          <main className="mx-auto max-w-6xl px-4 py-8">{children}</main>
+          <ToastProvider>
+            <Navbar />
+            <main className="mx-auto max-w-6xl px-4 py-8">{children}</main>
+          </ToastProvider>
         </WalletProvider>
       </body>
     </html>

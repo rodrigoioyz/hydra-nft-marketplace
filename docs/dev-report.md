@@ -1,7 +1,7 @@
 # Hydra NFT Marketplace — Development Report
 
-**Last updated:** 2026-03-29
-**Stack:** Aiken v1.1.19 · cardano-cli 10.x · Hydra v1.2.0 · TypeScript/Express · PostgreSQL · Next.js 14
+**Last updated:** 2026-03-30
+**Stack:** Aiken v1.1.19 · cardano-cli 10.x · Hydra v1.3.0 · TypeScript/Express · PostgreSQL · Next.js 14
 **Network:** Cardano preprod (testnet-magic 1)
 
 ---
@@ -23,6 +23,8 @@ A fixed-price marketplace for agricultural crop tokens where all trades execute 
 | 12 | E2E test suite (TypeScript, cardano-cli signing) | ✅ |
 | 13 | Farmer identity system (FarmerPass + CropTokens on L1) | ✅ |
 | 14 | Commit flow (classic commit + collect + ADA split) | ✅ fixed |
+| 15 | UX overhaul (invisible Head, SSE real-time, portfolio, dashboard, toasts) | ✅ |
+| 16 | Incremental commit (deposit while Head Open) | ✅ fixed in Hydra v1.3.0 |
 
 ---
 
@@ -198,19 +200,16 @@ aiken build   # → plutus.json
 
 **Fix:** Added `inputQuantity?: bigint` parameter. Escrow now locks the full token quantity. Change = `inputLovelace - minLovelace - fee` (ADA only; no token change needed when locking all tokens). The listing handler extracts the quantity from the Head UTxO snapshot.
 
-### 5.3 Hydra incremental commit (deposit) broken
+### 5.3 Hydra incremental commit (deposit) broken in v1.2.0 — FIXED in v1.3.0
 
-**Symptom:** `POST /commit` while Head is Open confirms on L1 at the deposit script address (`addr_test1wzhqrkk782wrgm2ujwhreceegy4epg9clqlefmrt4gjwxrqckxj2j`) but Hydra never emits `CommitRecorded`. `GET /commits` always returns `[]`.
+**Original symptom (v1.2.0):** `POST /commit` while Head is Open confirms on L1 at the deposit script address but Hydra never emits `CommitRecorded`. `pendingDeposits: {}` throughout.
 
-**Debugging done:**
-- Deposit tx confirmed on L1 with correct headId datum
-- Hydra logs only show `TickObserved` events — deposit script output is ignored
-- `pendingDeposits: {}` in Hydra persistent state throughout
-- Head was using `--contestation-period 600` but env had `180` — unrelated
+**Root cause (diagnosed from HeadV1 spec, section 6.4 tick handler):**
+The deposit lifecycle had a math flaw: `D.created` was set to `t_max` of the depositTx (= `T_draft + depositPeriod`), and `deadline = T_draft + 2 × depositPeriod`. This made the Active condition (`t > D.created + T_deposit = T_draft + 2×T_deposit`) unreachable because the Expired condition (`t > D.deadline - T_deposit = T_draft + T_deposit`) was evaluated first and triggered at the exact same wall-clock moment. Deposits went Inactive → Expired immediately, never reaching Active, so `CommitRecorded` was never emitted.
 
-**Conclusion:** Hydra 1.2.0 incremental deposits may require `--hydra-scripts-tx-id` (the tx that published Hydra scripts on-chain). Our node is started without this flag. **Do not use incremental deposits.** Use classic commit only.
+**Fix:** Hydra v1.3.0 release note: *"correctly handles deposits and decommits on chain rollbacks and handles its local state correctly in terms of keeping track of pending deposits (#2491)"* + *"Fixed another race-condition around incremental commits/decommits (#2500)"*.
 
-**Resolution:** Closed Head (fanout), re-initialized with `{"tag":"Init"}`, use classic commit before `Collect`.
+**Action taken:** Upgraded to Hydra v1.3.0 (2026-03-30). New preprod script TX IDs applied to `start.sh`.
 
 ### 5.4 Head got stuck in Closed state
 
@@ -265,16 +264,18 @@ When the backend tried to commit `0523c5629...#2` as the operator's ADA contribu
 
 ---
 
-## 6. Known Preprod State (2026-03-29)
+## 6. Known Preprod State (2026-03-30)
 
 ### Active processes
 
-| Process | PID range | tmux session | Port |
-|---------|-----------|--------------|------|
-| cardano-node | 230 | (background) | 6000 |
-| hydra-node | 2963127 | hydra-marketplace | 4001 |
-| backend (tsx) | ~3000 | hydra-backend | 3000 |
-| frontend (next dev) | ~3792041 | hydra-frontend | 3001 |
+| Process | Version | tmux session | Port |
+|---------|---------|--------------|------|
+| cardano-node | 10.6.2 | (background) | 6000 |
+| hydra-node | **1.3.0** | hydra-marketplace | 4001 |
+| backend (tsx) | — | hydra-backend | 3000 |
+| frontend (next dev) | — | hydra-frontend | 3001 |
+
+**⚠ Head must be re-initialized after upgrade** (v1.3.0 uses different script TX IDs).
 
 ### Restart commands
 
@@ -359,10 +360,21 @@ Pepito's address: `addr_test1qrgff35ks084ej5va4y2cc88092rfcgcdwr4zjtcq238sv9edts
 |--------|------|-------------|
 | POST | `/api/farmers/register` | Submit KYC |
 | GET | `/api/farmers/status/:address` | Registration status |
+| GET | `/api/farmers/stats/:address` | Sales stats (active, sold, revenue, recent sales) |
 | POST | `/api/crops/build-mint-tx` | Build unsigned L1 CropToken mint tx |
 | POST | `/api/crops/submit-mint-tx` | Submit signed L1 mint tx |
 | GET | `/api/crops/wallet/:address` | L1 CropTokens in wallet |
 | GET | `/api/crops/:address` | Crop mint records in DB |
+
+### Wallet / Deposits
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/wallet/balance/:address` | In-Head UTxOs for address (from snapshot) |
+| GET | `/api/wallet/l1-balance/:address` | L1 UTxOs via Blockfrost |
+| POST | `/api/wallet/deposit` | Build incremental commit tx (blueprint → Hydra `/commit`). Returns `commitTxCbor` for user to sign. |
+| POST | `/api/wallet/submit-l1-tx` | Submit signed tx CBOR to L1 via Blockfrost |
+| POST | `/api/wallet/withdraw` | Request decommit of an in-Head UTxO back to L1 |
 
 ### Admin (`X-Admin-Key` header)
 
@@ -419,12 +431,11 @@ curl http://127.0.0.1:3000/api/health | jq .headStatus
 # → "Initializing"
 ```
 
-Then in the browser (`/sell`):
-1. Connect pepito's wallet
-2. Select a CropToken → click **"Commit al Head"** (wallet signs with `partialSign=true`)
-3. After commit → click **"Abrir Head (Collect)"** (waits ~30s)
-4. After Head opens → click **"Dividir ADA"** (creates 2nd operator UTxO)
-5. Token shows **"En el Head ✓"** → fill price → **"Publicar"**
+Then in the browser:
+1. `/portfolio`: Connect wallet → select token UTxO → click **"Depositar al marketplace"** → wallet signs commit tx → backend submits to L1 via Blockfrost
+2. Wait for `CommitFinalized` SSE (~deposit period) → toast "Token disponible"
+3. `/sell`: Select token → fill price → **"Publicar"** → wallet signs escrow tx
+4. Token is now listed in the marketplace
 
 ### Environment variables
 
@@ -507,11 +518,87 @@ crop_mints           — crop lot records; tx_hash set on L1 confirm
 | Head session DB cleanup after fanout | P2 | `head_sessions` row stays `open` after fanout; should be updated to `closed` on `HeadIsFinalized` event |
 | E2E test with live Head | P2 | E2E suite tests infrastructure only; not run with real CropToken in Head |
 | Multi-party Head | P3 | Single-participant Head (operator only). Real marketplace needs 2+ nodes. |
-| NFT metadata | P3 | `assets` table empty; no images/display names |
+| NFT metadata | P3 | `assets` table empty — ~~no display names~~ displayName fixed (hex→UTF-8); no images yet |
+| TxInvalid txId matching | P2 | After BUG-001 fix, `TxInvalid` matching uses `event.transaction.txId?` (optional). Needs live testing to confirm `txId` is actually populated by Hydra v1.2.0. |
+| ~~Portfolio page~~ | ~~P3~~ | ✅ Implemented with Deposit/Withdraw buttons |
+| DB reconciliation job | P2 | T10.3: no automatic DB↔Hydra UTxO reconciliation; orphaned UTxOs require manual SQL fixes |
 
 ---
 
 ## 12. Change Log
+
+### 2026-03-30 (session 4) — Hydra v1.3.0 upgrade + UX overhaul (Opciones A & B)
+
+#### Hydra upgrade: v1.2.0 → v1.3.0
+
+- Binary replaced: `~/workspace/hydra_test/hydra-bin/hydra-node` → `1.3.0-7ccf541`
+- `hydra/scripts/start.sh`: 3 preprod script TX IDs updated to v1.3.0 values
+- `hydra/config/.env`: version comment updated
+- Backup stored at `hydra-node.1.2.0.bak`
+- **Breaking:** v1.3.0 rejects node inputs if >50% of contestation period out of sync; `TickObserved.chainSlot` renamed to `chainPoint` (no impact — not parsed in our code)
+- **Head must be closed (Fanout) and re-initialized before operating with v1.3.0 scripts**
+
+#### Opción A — Incremental deposit / withdraw UI
+
+Files changed:
+- `backend/src/types/hydra.ts`: Added `CommitRecorded`, `CommitApproved`, `CommitFinalized`, `DecommitRequested`, `DecommitApproved`, `DecommitInvalid`, `DecommitFinalized` to `HydraEventTag`
+- `backend/src/api/events.ts`: Added same tags to `RELAY_TAGS` — now relayed to browser via SSE
+- `backend/src/api/wallet.ts`: New `POST /wallet/submit-l1-tx` — submits signed tx CBOR to Blockfrost `/tx/submit`
+- `frontend/lib/api.ts`: Added `deposit()`, `submitL1Tx()`, `withdraw()` methods
+- `frontend/app/portfolio/page.tsx`: Full rewrite — shows L1 UTxOs with "Depositar al marketplace" button (token UTxOs only), Head UTxOs with "Retirar" button, "En tránsito" banner for pending deposits, SSE-driven auto-refresh on `CommitFinalized`/`DecommitFinalized`
+
+#### Opción B — Dashboard de productor + toasts
+
+Files changed:
+- `backend/src/api/farmers.ts`: New `GET /farmers/stats/:address` — active listings, total sold, total revenue, last 5 sales
+- `frontend/lib/api.ts`: Added `FarmerStats` interface + `farmerStats()` method
+- `frontend/components/ToastProvider.tsx`: New — global SSE-driven toast system (bottom-right, 5s auto-dismiss). Events → toasts: `CommitFinalized`, `DecommitFinalized`, `FarmerApproved`, `HeadIsClosed`, `HeadIsOpen`, `hydra:disconnected`, `hydra:connected`
+- `frontend/app/layout.tsx`: Mounted `ToastProvider` globally
+- `frontend/app/dashboard/page.tsx`: New page — stats grid, active listings with escrow status, last 5 sales, marketplace status badge, quick actions
+- `frontend/components/Navbar.tsx`: Added "Dashboard" link
+- `frontend/tailwind.config.ts`: Added `animate-fade-in` keyframe + missing `hydra-400/700/800` color tokens
+
+#### UX improvements (previous session, now fully operational)
+
+- `SellForm.tsx`: Removed all Hydra lifecycle UI (Commit/Collect/Split buttons). Seller flow: select token → price → sign escrow → done.
+- `BuySection.tsx`: Spanish text, 3-step progress, receipt modal with txId
+- `ListingsGrid.tsx`: Client component with SSE subscription, refreshes on `TxValid`/`SnapshotConfirmed`
+- `KycForm.tsx`: SSE subscription for `FarmerApproved` — auto-updates status without page reload
+- `frontend/app/page.tsx`: `revalidate: 60` (SSE handles real-time, no 5s polling)
+
+### 2026-03-29 (session 3) — Hydra v1.2.0 TxValid API fix + confirmation timeouts + display names + escrow signing
+
+#### Root cause confirmed: `awaitTxConfirmation` always timed out (CRITICAL)
+
+The official Hydra v1.2.0 OpenAPI schema (`hydra-node/json-schemas/api.yaml`) was fetched and compared against local types. Finding: the `TxValid` event in Hydra v1.2.0 has **no `transaction` object** — it sends `transactionId` as a top-level field. Our local `TxValidEvent` type incorrectly modeled this as `transaction: { id: string; cborHex: string }`.
+
+Effect: `event.transaction?.id === txId` was always `undefined === txId` → always `false` → every `awaitTxConfirmation` call timed out after 30s (later bumped to 60s), falling through to the snapshot fallback on every request.
+
+Similarly, `TxInvalid` has a `transaction` object (TextEnvelope) with an optional `txId` field — not an `id` field.
+
+#### `backend/src/types/hydra.ts`
+- `TxValidEvent`: removed `transaction: { id: string; cborHex: string }`, added `transactionId: string`
+- `TxInvalidEvent`: updated `transaction` to `{ type: string; description: string; cborHex: string; txId?: string }`
+
+#### `backend/src/hydra/client.ts`
+- `awaitTxConfirmation`: `event.transaction?.id` → `event.transactionId` (TxValid) and `event.transaction?.txId` (TxInvalid)
+- `summarize`: updated both branches to use the corrected field names
+
+#### `backend/src/db/eventStore.ts`
+- `onTxValid`: `event.transaction.id` → `event.transactionId`
+- `onTxInvalid`: `event.transaction.id` → `event.transaction.txId ?? ""`
+
+#### `backend/src/api/listings.ts` (prior in this session)
+- Added `pollSnapshotForEscrow` / `pollSnapshotForTx` snapshot fallback to escrow-confirm and buy-confirm endpoints. Tried `awaitTxConfirmation(60s)`, on timeout polled `hydra.getUtxos()` every 2s for 15s. This interim fix worked correctly via snapshot — now `awaitTxConfirmation` resolves immediately after BUG-001 fix. Fallback kept as defense-in-depth.
+- Added `hexToUtf8` helper + `displayName` field in `toApiListing`: decodes hex `asset_name` to UTF-8 for display (returns `null` for binary names). Verified: API returns `"displayName": "Lentejas pepito"`.
+
+#### `backend/src/tx/cli.ts`
+- `buildEscrowTxUnsigned`: added `--required-signer-hash ${opts.sellerVkh}` to declare the seller's key as required signer. CIP-30 wallets use this field to sign UTxOs that are not visible on L1 (because they are inside the Hydra Head).
+
+#### Operational fixes (manual SQL / Hydra tx)
+- **Merged operator UTxOs in Head**: two 20 ADA UTxOs → one 39.8 ADA UTxO using `cardano-cli build-raw` submitted directly to Hydra. Fee required iteration (0 → 165413 → 165589 lovelace) because the tx size changes as the fee field grows.
+- **Soja pepito orphaned at script address**: escrow-confirm timed out before fix → listing stayed `draft` → user retry → backend deleted draft → UTxO orphaned at script with no DB record. Fixed by inserting listing row manually.
+- **Buy tx confirmed in snapshot but 502**: buy tx `438d7fa0...` was in Hydra snapshot but backend returned 502 due to confirmation timeout. Fixed DB manually: listing→sold, sale→confirmed with `hydra_tx_id`.
 
 ### 2026-03-29 — Classic Commit + Buy Fix + Head Management
 

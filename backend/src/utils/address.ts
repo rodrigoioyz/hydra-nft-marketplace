@@ -9,6 +9,8 @@ export function getPaymentKeyHash(cardanoCliPath: string, address: string): stri
   );
   const info = JSON.parse(raw) as { base16?: string };
   if (!info.base16) throw new Error(`Could not parse address info for ${address}`);
-  // First byte is the address header; remaining 28 bytes are the payment key hash
-  return info.base16.slice(2); // strip the 1-byte (2 hex chars) header
+  // First byte is the address header; next 28 bytes are the payment key hash.
+  // Base addresses also contain a 28-byte staking key hash after the payment key
+  // hash — slice to exactly 56 hex chars (28 bytes) to get payment key only.
+  return info.base16.slice(2, 58); // header=2 hex, payment key hash=56 hex
 }

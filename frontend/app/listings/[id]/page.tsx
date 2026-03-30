@@ -93,7 +93,7 @@ export default async function ListingPage({ params }: { params: { id: string } }
           {/* Actions */}
           {listing.status === "active" && (
             <div className="mt-6 space-y-3">
-              <BuySection listingId={listing.id} priceLovelace={listing.priceLovelace} />
+              <BuySection listingId={listing.id} priceLovelace={listing.priceLovelace} displayName={listing.displayName} />
               <CancelSection listingId={listing.id} sellerAddress={listing.sellerAddress} />
             </div>
           )}

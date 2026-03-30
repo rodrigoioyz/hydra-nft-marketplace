@@ -1,4 +1,4 @@
-// Hydra WebSocket event types (v1.2.0)
+// Hydra WebSocket event types (v1.3.0)
 
 export type HeadStatus =
   | "Idle"
@@ -21,7 +21,14 @@ export type HydraEventTag =
   | "ReadyToFanout"
   | "HeadIsFinalized"
   | "CommandFailed"
-  | "PostTxOnChainFailed";
+  | "PostTxOnChainFailed"
+  | "CommitRecorded"
+  | "CommitApproved"
+  | "CommitFinalized"
+  | "DecommitRequested"
+  | "DecommitApproved"
+  | "DecommitInvalid"
+  | "DecommitFinalized";
 
 export interface HydraUtxo {
   address: string;
@@ -63,7 +70,7 @@ export interface HeadIsOpenEvent {
 export interface TxValidEvent {
   tag: "TxValid";
   headId: string;
-  transaction: { id: string; cborHex: string };
+  transactionId: string;  // top-level in Hydra v1.2.0 — no nested transaction object
   seq: number;
   timestamp: string;
 }
@@ -71,7 +78,7 @@ export interface TxValidEvent {
 export interface TxInvalidEvent {
   tag: "TxInvalid";
   headId: string;
-  transaction: { id: string; cborHex: string };
+  transaction: { type: string; description: string; cborHex: string; txId?: string };
   utxo: UtxoSet;
   validationError: { reason: string };
   seq: number;

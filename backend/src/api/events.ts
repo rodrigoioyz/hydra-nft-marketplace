@@ -18,6 +18,12 @@ const RELAY_TAGS = new Set([
   "SnapshotConfirmed",
   "Committed",
   "Greetings",
+  "FarmerApproved",
+  "CommitRecorded",
+  "CommitApproved",
+  "CommitFinalized",
+  "DecommitRequested",
+  "DecommitFinalized",
 ]);
 
 type SseClient = {

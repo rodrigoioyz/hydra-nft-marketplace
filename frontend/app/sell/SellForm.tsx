@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { api, newRequestId } from "@/lib/api";
 import { useWallet } from "@/context/WalletContext";
 import { useRouter } from "next/navigation";
-import type { FarmerRegistration, CropWalletAsset, HeadStatus } from "@/lib/api";
+import type { FarmerRegistration, CropWalletAsset, HeadStatus, EscrowInfo } from "@/lib/api";
 
 function decodeHexToUtf8(hex: string): string {
   try {
@@ -14,15 +14,9 @@ function decodeHexToUtf8(hex: string): string {
   }
 }
 
-// Token enriched with Head presence status
 interface TokenWithStatus extends CropWalletAsset {
   inHead: boolean;
 }
-
-// One-time recovery: operator-pre-signed cancel tx for tokens stuck in old escrow
-// Escrow UTxO: 72816af79328a075161c1249ea9f47106d4f0f653ed4d36d8d5df7aae8c276b3#0
-const RECOVER_TX_ID = "e6816bb9c9ac8dac90a45a9abb201938a4e426ee1e2203d20661faa62ca3e791";
-const RECOVER_CBOR  = "84a600d901028282582072816af79328a075161c1249ea9f47106d4f0f653ed4d36d8d5df7aae8c276b30082582078a07d5d05a11f6151bdfa3cf6e6d5b4597d100990dfb207d94d025db65e60d1000dd901028182582078a07d5d05a11f6151bdfa3cf6e6d5b4597d100990dfb207d94d025db65e60d101018282583900d094c69683cf5cca8ced48ac60e7795434e1186b8751497802a27830b96ae19199c5606a9c97a7d3be51c59bf4f9a439e2388baed89fb6f5821a001e8480a1581c111da6625fa277baf894d3c16f799349a44cd8713e55ac7c3c950c4da14b4d61697a2070657069746f1903e882581d609d939cdf9c295dfd77d0deb40767d27a19e8806372820f4ec85cf1a31a01280540021a000927c00ed9010281581cd094c69683cf5cca8ced48ac60e7795434e1186b8751497802a278300b58206a708ef8d3aec1150db2ab3a12e5d4409ab7b42238b945afc86573f7197ced1ba300d9010281825820afc39c66f12581cb70ad2de7858f270524553cd8c7f3f38cec36870ed8bbed3758405a62f1cbb1eca458a3ba10d81102ba8c36eb34ad2a32fcc01e0a205e7773047d71d526c719b98e94bc75c8107d45ebbdfaa4e87f58a10b55f52c294b9c414d0807d901028159031b59031801010029800aba2aba1aba0aab9faab9eaab9dab9a488888896600264653001300800198041804800cdc3a400530080024888966002600460106ea800e26466453001159800980098059baa0028cc004c03cc030dd500148c040c044c04400644646600200200644b30010018a508acc004c00cc04c00629462660040046028002807101148c040c0440064446466446600400400244b3001001801c4c8cc896600266e4401c00a2b30013371e00e00510018032026899802802980c8022026375c60240026eb4c04c004c054005013191919800800803112cc00400600713233225980099b910090028acc004cdc78048014400600c80a226600a00a603400880a0dd718098009bab301400130160014050297adef6c601480026e952000488888966002600e60226ea8036264b300198009bac300630133754017375c602c60266ea801e6eb4c058c05cc05cc05cc04cdd5003a444660100064b30013375e6034602e6ea8c068c05cdd500098031980c9ba90034bd7044cdc48014c004dd59804180b9baa001a44100a44100401d14a080a9198009bac300630133754017375c600860266ea801e6eb8c018c04cdd5003a444660100064b30013375e6034602e6ea8c068c05cdd500098031980c9ba90054bd7044c04260026eacc020c05cdd5000c00e004803a2941015229410111bae30153012375401b15980099199119801001000912cc00400629422b30013371e6eb8c06000400e2946266004004603200280990161bac301630173017301730173017301730173017301337540166eb8c054c048dd50034660026eb0c014c048dd50054dd7180a98091baa0069bae30033012375400d375c600a60246ea801922223300800425980099baf301a301737546034602e6ea8004c018cc064dd480225eb8226021300137566010602e6ea8006007002401d14a080a914a0808101022c805260166ea801e601e0069112cc004c01000a26464b30013015002802c590121bae3013001300f375401515980098040014566002601e6ea802a0071640411640348068601a601c0026e1d20003009375400716401c300800130033754011149a26cac800905a182000082d87a80821a002dc6c01a29b92700f5f6";
 
 export function SellForm() {
   const router = useRouter();
@@ -33,35 +27,25 @@ export function SellForm() {
   const [selected,   setSelected]   = useState<TokenWithStatus | null>(null);
   const [headStatus, setHeadStatus] = useState<HeadStatus | null>(null);
 
-  const [recoverState, setRecoverState] = useState<"idle" | "signing" | "submitting" | "done" | "error">("idle");
-  const [recoverError, setRecoverError] = useState<string | null>(null);
+  const [myEscrows,     setMyEscrows]     = useState<EscrowInfo[]>([]);
+  const [recoverStates, setRecoverStates] = useState<Record<string, "idle" | "signing" | "submitting" | "done" | "error">>({});
+  const [recoverErrors, setRecoverErrors] = useState<Record<string, string | null>>({});
 
-  const [quantity,     setQuantity]     = useState("");
-  const [priceAda,     setPriceAda]     = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [priceAda, setPriceAda] = useState("");
 
-  // Listing (step 2)
-  const [listingId,    setListingId]    = useState<string | null>(null);
-  const [escrowTxCbor, setEscrowTxCbor] = useState("");
-  const [txId,         setTxId]         = useState("");
-
-  // Commit flow
+  // Listing step 2
+  const [listingId,        setListingId]        = useState<string | null>(null);
+  const [escrowTxCbor,     setEscrowTxCbor]     = useState("");
+  const [txId,             setTxId]             = useState("");
   const [needsPartialSign, setNeedsPartialSign] = useState(false);
-  const [committing,   setCommitting]   = useState(false);
-  const [commitDone,   setCommitDone]   = useState<string | null>(null); // txHash
-  // Collecting (opening the Head after commit)
-  const [collecting,   setCollecting]   = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const loadHeadStatus = useCallback(async () => {
-    try {
-      const hs = await api.headStatus();
-      setHeadStatus(hs);
-    } catch {
-      // ignore
-    }
+    try { setHeadStatus(await api.headStatus()); } catch { /* ignore */ }
   }, []);
 
   const loadTokens = useCallback(async (addr: string) => {
@@ -69,23 +53,23 @@ export function SellForm() {
     try {
       const [walletAssets, headUtxos] = await Promise.all([
         api.cropWalletAssets(addr),
-        fetch("/api/head/utxos").then((r) => r.json() as Promise<Record<string, { value: Record<string, unknown>; address: string }>>).catch(() => ({})),
+        fetch("/api/head/utxos")
+          .then((r) => r.json() as Promise<Record<string, { value: Record<string, unknown>; address: string }>>)
+          .catch(() => ({})),
       ]);
 
-      // Tokens already in the Head at this address (may no longer appear on L1)
-      const headTokenMap = new Map<string, number>(); // "policyId.assetName" -> qty
+      const headTokenMap = new Map<string, number>();
       for (const u of Object.values(headUtxos)) {
         if (u.address !== addr) continue;
-        for (const [pid, tokens] of Object.entries(u.value)) {
+        for (const [pid, tokenMap] of Object.entries(u.value)) {
           if (pid === "lovelace") continue;
-          for (const [assetName, qty] of Object.entries(tokens as Record<string, number>)) {
+          for (const [assetName, qty] of Object.entries(tokenMap as Record<string, number>)) {
             const key = `${pid}.${assetName}`;
             headTokenMap.set(key, (headTokenMap.get(key) ?? 0) + qty);
           }
         }
       }
 
-      // Start with L1 wallet tokens, marking those also in Head
       const seen = new Set<string>();
       const enriched: TokenWithStatus[] = walletAssets.map((t) => {
         const key = `${t.policyId}.${t.assetNameHex}`;
@@ -93,13 +77,11 @@ export function SellForm() {
         return { ...t, inHead: headTokenMap.has(key) };
       });
 
-      // Add tokens that are ONLY in the Head (already committed, no longer on L1)
       for (const [key, qty] of headTokenMap.entries()) {
         if (seen.has(key)) continue;
         const [policyId, assetNameHex] = key.split(".");
         enriched.push({
-          policyId,
-          assetNameHex,
+          policyId, assetNameHex,
           assetName: decodeHexToUtf8(assetNameHex),
           quantity: qty,
           inHead: true,
@@ -113,103 +95,50 @@ export function SellForm() {
     }
   }, []);
 
+  const loadEscrows = useCallback(async (addr: string) => {
+    try {
+      const { escrows } = await api.myEscrows(addr);
+      setMyEscrows(escrows.filter((e) => e.inHead));
+    } catch {
+      setMyEscrows([]);
+    }
+  }, []);
+
   useEffect(() => {
     void loadHeadStatus();
     if (!address) {
-      setFarmer(null);
-      setTokens(null);
-      setSelected(null);
+      setFarmer(null); setTokens(null); setSelected(null); setMyEscrows([]);
       return;
     }
     setFarmer("loading");
-    api.farmerStatus(address)
-      .then(setFarmer)
-      .catch(() => setFarmer(null));
+    api.farmerStatus(address).then(setFarmer).catch(() => setFarmer(null));
     loadTokens(address);
-  }, [address, loadTokens, loadHeadStatus]);
+    loadEscrows(address);
+  }, [address, loadTokens, loadHeadStatus, loadEscrows]);
 
-  const farmerApproved = farmer !== "loading" && farmer?.status === "approved";
-  const headIsOpen = headStatus?.status?.toLowerCase() === "open";
-  const headIsInitializing = headStatus?.status?.toLowerCase() === "initializing";
+  const farmerApproved  = farmer !== "loading" && farmer?.status === "approved";
+  const marketplaceOpen = headStatus?.status?.toLowerCase() === "open";
 
-  // ── Recover tokens stuck in old escrow ────────────────────────────────────
-  async function handleRecover() {
-    setRecoverState("signing"); setRecoverError(null);
+  // ── Recover token stuck in escrow ─────────────────────────────────────────
+  async function handleRecover(escrowId: string) {
+    setRecoverStates((s) => ({ ...s, [escrowId]: "signing" }));
+    setRecoverErrors((s) => ({ ...s, [escrowId]: null }));
     try {
-      const fullySigned = await signTx(RECOVER_CBOR, true);
-      setRecoverState("submitting");
-      const r = await fetch("/api/head/submit-raw", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ signedTxCbor: fullySigned, txId: RECOVER_TX_ID }),
-      });
-      const data = await r.json() as { ok?: boolean; error?: string; message?: string };
-      if (!r.ok) throw new Error(data.message ?? data.error ?? `HTTP ${r.status}`);
-      setRecoverState("done");
-      if (address) setTimeout(() => { void loadTokens(address); }, 3000);
-    } catch (e) {
-      setRecoverError(e instanceof Error ? e.message : "Error al recuperar");
-      setRecoverState("error");
-    }
-  }
-
-  // ── Commit to Head (classic commit while Head is Initializing) ─────────────
-  async function handleCommit() {
-    if (!address || !selected) return;
-    setCommitting(true); setError(null);
-    try {
-      const { unsignedTxCbor, txId: ctxId } = await api.cropBuildCommitTx({
-        address, assetNameHex: selected.assetNameHex,
-      });
-      // Operator already signed their portion; farmer adds their witness (partialSign=true)
+      if (!address) throw new Error("No wallet connected");
+      const { unsignedTxCbor, txId: cancelTxId } = await api.cancelTx(escrowId);
       const signedCbor = await signTx(unsignedTxCbor, true);
-      await api.cropSubmitCommitTx({ signedTxCbor: signedCbor });
-      setCommitDone(ctxId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al commitear");
-    } finally {
-      setCommitting(false);
-    }
-  }
-
-  // ── Collect (open the Head) ────────────────────────────────────────────────
-  async function handleCollect() {
-    setCollecting(true); setError(null);
-    try {
-      await fetch("/api/head/collect", { method: "POST" }).then(async (r) => {
-        if (!r.ok) {
-          const d = await r.json() as { error?: string };
-          throw new Error(d.error ?? `HTTP ${r.status}`);
-        }
+      setRecoverStates((s) => ({ ...s, [escrowId]: "submitting" }));
+      await api.cancel(escrowId, {
+        requestId: newRequestId(), sellerAddress: address,
+        signedCancelTxCbor: signedCbor, txId: cancelTxId,
       });
-      // Poll until head is Open
-      for (let i = 0; i < 24; i++) {
-        await new Promise((r) => setTimeout(r, 5000));
-        const hs = await api.headStatus();
-        setHeadStatus(hs);
-        if (hs.status === "Open") break;
-      }
-      if (address) await loadTokens(address);
+      setRecoverStates((s) => ({ ...s, [escrowId]: "done" }));
+      setTimeout(() => {
+        if (address) { void loadTokens(address); void loadEscrows(address); }
+      }, 3000);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al abrir el Head");
-    } finally {
-      setCollecting(false);
-    }
-  }
-
-  // ── Split ADA (prepare collateral + buyer-input UTxOs) ────────────────────
-  async function handleSplitAda() {
-    setError(null);
-    try {
-      await fetch("/api/head/split-ada", { method: "POST" }).then(async (r) => {
-        if (!r.ok) {
-          const d = await r.json() as { error?: string };
-          throw new Error(d.error ?? `HTTP ${r.status}`);
-        }
-      });
-      setSuccess("✓ ADA dividida. Hay 2 UTxOs ADA disponibles para compras.");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al dividir ADA");
+      setRecoverErrors((s) => ({ ...s, [escrowId]: e instanceof Error ? e.message : "Error al recuperar" }));
+      setRecoverStates((s) => ({ ...s, [escrowId]: "error" }));
     }
   }
 
@@ -218,7 +147,7 @@ export function SellForm() {
     e.preventDefault(); setError(null);
     if (!address)  { setError("Conectá tu billetera primero"); return; }
     if (!selected) { setError("Seleccioná un token"); return; }
-    if (!selected.inHead) { setError("El token debe estar en el Head. Hacé el commit primero."); return; }
+    if (!selected.inHead) { setError("Este token aún no está habilitado para publicar. Contactá al administrador."); return; }
     const qty = parseFloat(quantity);
     if (!qty || qty <= 0) { setError("Ingresá la cantidad"); return; }
     if (qty > selected.quantity) { setError(`Solo tenés ${selected.quantity} unidades disponibles`); return; }
@@ -228,10 +157,8 @@ export function SellForm() {
     setLoading(true);
     try {
       const result = await api.createListing({
-        requestId:     newRequestId(),
-        sellerAddress: address,
-        policyId:      selected.policyId,
-        assetName:     selected.assetNameHex,
+        requestId: newRequestId(), sellerAddress: address,
+        policyId: selected.policyId, assetName: selected.assetNameHex,
         priceLovelace: String(pl),
       });
       setListingId(result.listingId);
@@ -252,7 +179,7 @@ export function SellForm() {
     try {
       const signedCbor = await signTx(escrowTxCbor, needsPartialSign);
       await api.escrowConfirm(listingId, { signedTxCbor: signedCbor, txId });
-      setSuccess("✓ Listing activo. Redirigiendo…");
+      setSuccess("✓ Publicación activa. Redirigiendo…");
       setTimeout(() => router.push(`/listings/${listingId}`), 1500);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al firmar");
@@ -265,13 +192,7 @@ export function SellForm() {
   if (listingId) return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 p-6 space-y-4">
       <div className="rounded-lg border border-green-800 bg-green-950 p-3 text-sm text-green-300">
-        ✓ Borrador creado. Firmá la tx de escrow con tu billetera para activarlo.
-      </div>
-      <div>
-        <p className="text-sm text-gray-400 mb-1">TX CBOR sin firmar</p>
-        <textarea readOnly value={escrowTxCbor} rows={3}
-          className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs font-mono text-gray-400 resize-none" />
-        <p className="mt-1 text-xs text-gray-500">TX ID: {txId}</p>
+        ✓ Publicación creada. Firmá con tu billetera para activarla.
       </div>
       <form onSubmit={handleSign} className="space-y-3">
         {error   && <p className="text-sm text-red-400">{error}</p>}
@@ -296,72 +217,54 @@ export function SellForm() {
       )}
       {address && farmer === "loading" && (
         <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-sm text-gray-400">
-          Verificando FarmerPass…
+          Verificando acceso…
         </div>
       )}
       {address && farmer !== "loading" && !farmerApproved && (
         <div className="rounded-lg border border-red-800 bg-red-950 p-3 text-sm text-red-300">
-          ⚠ Solo agricultores aprobados pueden publicar cultivos.{" "}
+          ⚠ Solo productores verificados pueden publicar cultivos.{" "}
           {farmer?.status === "pending"
-            ? "Tu solicitud de KYC está en revisión."
-            : <><a href="/identity" className="underline hover:text-red-200">Completá tu identidad</a> para solicitar acceso.</>}
+            ? "Tu solicitud está en revisión — te avisaremos cuando sea aprobada."
+            : <><a href="/identity" className="underline hover:text-red-200">Completá tu perfil</a> para solicitar acceso.</>}
         </div>
       )}
 
-      {/* Head status indicator */}
-      {headStatus && (
-        <div className={`rounded-lg border p-3 text-sm flex items-center justify-between ${
-          headIsOpen
-            ? "border-green-800 bg-green-950 text-green-300"
-            : headIsInitializing
-            ? "border-blue-800 bg-blue-950 text-blue-300"
-            : "border-gray-700 bg-gray-800 text-gray-400"
-        }`}>
-          <span>
-            Hydra Head:{" "}
-            <strong>
-              {headIsOpen
-                ? "Abierto ✓"
-                : headIsInitializing
-                ? "Listo para commit"
-                : headStatus.status}
-            </strong>
-            {headIsInitializing && (
-              <span className="ml-2 text-xs font-normal opacity-75">
-                — seleccioná tu token y hacé commit
-              </span>
-            )}
-          </span>
-          <button type="button" onClick={loadHeadStatus} className="text-xs opacity-70 hover:opacity-100">↺</button>
+      {/* Marketplace status */}
+      {headStatus && !marketplaceOpen && (
+        <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-sm text-gray-400 flex items-center justify-between">
+          <span>El marketplace no está disponible en este momento.</span>
+          <button type="button" onClick={loadHeadStatus} className="text-xs opacity-70 hover:opacity-100 ml-2">↺</button>
         </div>
       )}
 
-      {/* Recover tokens stuck in old escrow (one-time) */}
-      {headIsOpen && recoverState !== "done" && (
-        <div className="rounded-lg border border-orange-800 bg-orange-950 p-4 space-y-2">
-          <p className="text-sm text-orange-200 font-medium">Tokens bloqueados en escrow antiguo</p>
-          <p className="text-xs text-orange-400">
-            1000 Maiz pepito quedaron en un contrato viejo. Firmá esta tx para recuperarlos al Head.
-          </p>
-          {recoverError && <p className="text-sm text-red-400">{recoverError}</p>}
-          {recoverState === "done" && (
-            <p className="text-sm text-green-400">✓ Tokens recuperados. Actualizando…</p>
-          )}
-          <button
-            type="button"
-            onClick={handleRecover}
-            disabled={recoverState === "signing" || recoverState === "submitting" || !address}
-            className="w-full rounded-lg bg-orange-700 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50"
-          >
-            {recoverState === "signing"    ? "Esperando firma de billetera…"
-              : recoverState === "submitting" ? "Enviando al Head…"
-              : "Recuperar 1000 Maiz pepito"}
-          </button>
-        </div>
-      )}
-      {recoverState === "done" && (
-        <div className="rounded-lg border border-green-800 bg-green-950 p-3 text-sm text-green-300">
-          ✓ Tokens recuperados al Head. Presioná <strong>Actualizar</strong> para verlos.
+      {/* Recover active escrows */}
+      {marketplaceOpen && myEscrows.length > 0 && (
+        <div className="space-y-2">
+          {myEscrows.map((esc) => {
+            const state = recoverStates[esc.id] ?? "idle";
+            const err   = recoverErrors[esc.id];
+            if (state === "done") return (
+              <div key={esc.id} className="rounded-lg border border-green-800 bg-green-950 p-3 text-sm text-green-300">
+                ✓ {esc.displayName ?? esc.assetName} recuperado.
+              </div>
+            );
+            return (
+              <div key={esc.id} className="rounded-lg border border-orange-800 bg-orange-950 p-4 space-y-2">
+                <p className="text-sm text-orange-200 font-medium">Publicación sin vender</p>
+                <p className="text-xs text-orange-400">
+                  <strong>{esc.displayName ?? esc.assetName}</strong> está publicado. Cancelá para recuperarlo.
+                </p>
+                {err && <p className="text-sm text-red-400">{err}</p>}
+                <button type="button" onClick={() => { void handleRecover(esc.id); }}
+                  disabled={state === "signing" || state === "submitting" || !address}
+                  className="w-full rounded-lg bg-orange-700 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:opacity-50">
+                  {state === "signing"    ? "Esperando firma de billetera…"
+                    : state === "submitting" ? "Cancelando publicación…"
+                    : "Recuperar token (cancelar publicación)"}
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -369,9 +272,10 @@ export function SellForm() {
       {farmerApproved && (
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-sm text-gray-400">Tus CropTokens</label>
+            <label className="text-sm text-gray-400">Tus cultivos</label>
             {address && (
-              <button type="button" onClick={() => { void loadTokens(address); void loadHeadStatus(); }}
+              <button type="button"
+                onClick={() => { void loadTokens(address); void loadHeadStatus(); void loadEscrows(address); }}
                 className="text-xs text-hydra-400 hover:text-hydra-300">
                 ↺ Actualizar
               </button>
@@ -379,12 +283,12 @@ export function SellForm() {
           </div>
 
           {tokens === "loading" && (
-            <p className="text-sm text-gray-500">Consultando billetera y Head…</p>
+            <p className="text-sm text-gray-500">Consultando tus cultivos…</p>
           )}
 
           {tokens !== "loading" && tokens !== null && tokens.length === 0 && (
             <div className="rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm text-gray-400 text-center">
-              No tenés CropTokens en tu billetera L1.{" "}
+              No tenés cultivos disponibles.{" "}
               <a href="/identity" className="underline text-hydra-400 hover:text-hydra-300">
                 Mintealos en Identidad
               </a>.
@@ -394,10 +298,8 @@ export function SellForm() {
           {tokens !== "loading" && tokens !== null && tokens.length > 0 && (
             <div className="grid gap-2">
               {tokens.map((t) => (
-                <button
-                  key={t.assetNameHex}
-                  type="button"
-                  onClick={() => { setSelected(t); setQuantity(String(t.quantity)); setError(null); setCommitDone(null); }}
+                <button key={t.assetNameHex} type="button"
+                  onClick={() => { setSelected(t); setQuantity(String(t.quantity)); setError(null); }}
                   className={`flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-colors ${
                     selected?.assetNameHex === t.assetNameHex
                       ? "border-hydra-500 bg-hydra-950 text-white"
@@ -413,11 +315,9 @@ export function SellForm() {
                   <div className="text-right space-y-1">
                     <p className="text-sm font-semibold tabular-nums">{t.quantity.toLocaleString()} uds.</p>
                     <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-medium ${
-                      t.inHead
-                        ? "bg-green-900 text-green-300"
-                        : "bg-yellow-900 text-yellow-300"
+                      t.inHead ? "bg-green-900 text-green-300" : "bg-gray-700 text-gray-400"
                     }`}>
-                      {t.inHead ? "En el Head ✓" : "L1 — necesita commit"}
+                      {t.inHead ? "Disponible ✓" : "Pendiente de habilitación"}
                     </span>
                   </div>
                 </button>
@@ -427,72 +327,10 @@ export function SellForm() {
         </div>
       )}
 
-      {/* Commit to Head panel (classic commit — Head must be Initializing) */}
-      {selected && !selected.inHead && !commitDone && (
-        <div className="rounded-lg border border-yellow-800 bg-yellow-950 p-4 space-y-3">
-          <p className="text-sm text-yellow-200 font-medium">Paso previo: Commit al Head de Hydra</p>
-          {!headIsInitializing && !headIsOpen && (
-            <p className="text-xs text-yellow-400">
-              El Head debe estar en estado <strong>Initializing</strong> para hacer el commit clásico.
-              Estado actual: <strong>{headStatus?.status ?? "desconocido"}</strong>.
-            </p>
-          )}
-          {headIsInitializing && (
-            <p className="text-xs text-yellow-400">
-              El Head está listo para el commit. Tu token + el ADA del operador se comprometerán juntos.
-              Firmá la tx con tu billetera.
-            </p>
-          )}
-          {error && <p className="text-sm text-red-400">{error}</p>}
-          <button
-            type="button"
-            onClick={handleCommit}
-            disabled={committing || !headIsInitializing}
-            className="w-full rounded-lg bg-yellow-700 py-2 text-sm font-semibold text-white hover:bg-yellow-600 disabled:opacity-50"
-          >
-            {committing ? "Firmando commit…" : "Commit al Head (firma requerida)"}
-          </button>
-        </div>
-      )}
-
-      {/* After commit: show Collect button to open the Head */}
-      {commitDone && !selected?.inHead && (
-        <div className="rounded-lg border border-blue-800 bg-blue-950 p-4 space-y-3">
-          <p className="text-sm text-blue-300 font-medium">
-            ✓ Commit enviado ({commitDone.slice(0, 12)}…)
-          </p>
-          {!headIsOpen && (
-            <>
-              <p className="text-xs text-blue-400">
-                Ahora el operador puede abrir el Head. Hacé clic en <strong>Abrir Head</strong>.
-              </p>
-              {error && <p className="text-sm text-red-400">{error}</p>}
-              <button
-                type="button"
-                onClick={handleCollect}
-                disabled={collecting}
-                className="w-full rounded-lg bg-blue-700 py-2 text-sm font-semibold text-white hover:bg-blue-600 disabled:opacity-50"
-              >
-                {collecting ? "Abriendo Head… (puede tardar ~30s)" : "Abrir Head (Collect)"}
-              </button>
-            </>
-          )}
-          {headIsOpen && (
-            <p className="text-xs text-green-300">
-              ✓ Head abierto. Presioná <strong>Actualizar</strong> para ver tu token en el Head.
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Split ADA helper (only shown when Head is open and no commit pending) */}
-      {headIsOpen && !commitDone && (
-        <div className="rounded-lg border border-gray-700 bg-gray-800 p-3 text-sm text-gray-400 flex items-center justify-between">
-          <span>Preparar UTxOs para compras (dividir ADA del operador)</span>
-          <button type="button" onClick={handleSplitAda}
-            className="text-xs text-hydra-400 hover:text-hydra-300 ml-3">
-            Dividir ADA
-          </button>
+      {/* Token not yet tradeable */}
+      {selected && !selected.inHead && (
+        <div className="rounded-lg border border-yellow-800 bg-yellow-950 p-4 text-sm text-yellow-300">
+          ⚠ Este cultivo aún no está habilitado para publicar. Contactá al administrador.
         </div>
       )}
 
@@ -503,16 +341,14 @@ export function SellForm() {
             <label className="block text-sm text-gray-400 mb-1">
               Cantidad a vender <span className="text-gray-600">(máx {selected.quantity})</span>
             </label>
-            <input
-              type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)}
+            <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)}
               placeholder="Ej: 500" min="1" max={selected.quantity} step="1"
               className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none"
             />
           </div>
           <div>
             <label className="block text-sm text-gray-400 mb-1">Precio del lote (ADA)</label>
-            <input
-              type="number" value={priceAda} onChange={(e) => setPriceAda(e.target.value)}
+            <input type="number" value={priceAda} onChange={(e) => setPriceAda(e.target.value)}
               placeholder="Ej: 40" min="2" step="0.5"
               className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none"
             />
@@ -521,18 +357,16 @@ export function SellForm() {
         </div>
       )}
 
-      {error && !committing && <p className="text-sm text-red-400">{error}</p>}
+      {error   && <p className="text-sm text-red-400">{error}</p>}
       {success && <p className="text-sm text-green-400">{success}</p>}
 
-      <button
-        type="submit"
-        disabled={loading || !address || !farmerApproved || !selected || !selected.inHead || !headIsOpen}
-        className="w-full rounded-lg bg-hydra-600 py-3 text-sm font-semibold text-white hover:bg-hydra-500 disabled:opacity-50"
-      >
-        {loading ? "Creando…"
-          : !selected ? "Seleccioná un token"
-          : !selected.inHead ? "Commit al Head primero"
-          : !headIsOpen ? "Head no está abierto"
+      <button type="submit"
+        disabled={loading || !address || !farmerApproved || !selected || !selected.inHead || !marketplaceOpen}
+        className="w-full rounded-lg bg-hydra-600 py-3 text-sm font-semibold text-white hover:bg-hydra-500 disabled:opacity-50">
+        {loading ? "Creando publicación…"
+          : !selected ? "Seleccioná un cultivo"
+          : !selected.inHead ? "Cultivo pendiente de habilitación"
+          : !marketplaceOpen ? "Marketplace no disponible"
           : `Publicar ${selected.assetName}`}
       </button>
     </form>

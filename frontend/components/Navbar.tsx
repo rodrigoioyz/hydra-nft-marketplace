@@ -13,6 +13,12 @@ export function Navbar() {
           <Link href="/" className="text-sm text-gray-300 hover:text-white">
             Browse
           </Link>
+          <Link href="/dashboard" className="text-sm text-gray-300 hover:text-white">
+            Dashboard
+          </Link>
+          <Link href="/portfolio" className="text-sm text-gray-300 hover:text-white">
+            Portfolio
+          </Link>
           <Link href="/identity" className="text-sm text-gray-300 hover:text-white">
             Identidad
           </Link>

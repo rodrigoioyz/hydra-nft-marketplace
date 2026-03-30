@@ -232,6 +232,14 @@ Events drive all updates. Exact WebSocket event names from the Hydra API:
 | `HeadIsClosed` | Close submitted | HeadSession → `closed` |
 | `ReadyToFanout` | Contestation deadline passed | HeadSession → `fanout_pending` |
 
+> **Hydra v1.2.0 API note (verified 2026-03-29):**
+> The `TxValid` event has **no `transaction` object** — it sends `transactionId` as a top-level field:
+> ```json
+> { "tag": "TxValid", "headId": "...", "transactionId": "abc123...", "seq": 5, "timestamp": "..." }
+> ```
+> `TxInvalid` sends a full `transaction` TextEnvelope (no `id` field; optional `txId`). Match using `event.transaction?.txId`.
+> Always verify event shapes against the official schema at `hydra-node/json-schemas/api.yaml` before typing.
+
 ---
 
 ## 7. Transaction Architecture

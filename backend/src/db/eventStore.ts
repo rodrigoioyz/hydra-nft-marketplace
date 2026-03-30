@@ -161,12 +161,12 @@ export class EventStore {
   // ── Tx outcome projections ────────────────────────────────────────────────
 
   private async onTxValid(event: TxValidEvent): Promise<void> {
-    const txId = event.transaction.id;
+    const txId = event.transactionId;
     await this.applyTxConfirmed(txId);
   }
 
   private async onTxInvalid(event: TxInvalidEvent): Promise<void> {
-    const txId = event.transaction.id;
+    const txId = event.transaction.txId ?? "";
     const reason = event.validationError.reason;
 
     // Mark submission failed

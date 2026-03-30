@@ -41,7 +41,6 @@ export function AdminPanel() {
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState<string | null>(null);
   const [actionId,      setActionId]      = useState<string | null>(null);
-  const [passTxHash,    setPassTxHash]    = useState<Record<string, string>>({});
   const [rejectReason,  setRejectReason]  = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
@@ -59,12 +58,9 @@ export function AdminPanel() {
   useEffect(() => { refresh(); }, [refresh]);
 
   async function handleApprove(id: string) {
-    if (!address) { setError("Conectá tu billetera"); return; }
-    const txHash = passTxHash[id]?.trim();
-    if (!txHash) { setError(`Ingresá el TX hash del FarmerPass para ${id}`); return; }
     setActionId(id); setError(null);
     try {
-      await adminPost(`/admin/farmers/${id}/approve`, { reviewerAddress: address, farmerPassTxHash: txHash });
+      await adminPost(`/admin/farmers/${id}/approve`, {});
       setFarmers((prev) => prev.filter((f) => f.id !== id));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al aprobar");
@@ -130,23 +126,13 @@ export function AdminPanel() {
           </div>
 
           {/* Approve */}
-          <div className="space-y-2">
-            <label className="block text-xs text-gray-400">TX hash del FarmerPass minted en L1</label>
-            <input
-              type="text"
-              value={passTxHash[f.id] ?? ""}
-              onChange={(e) => setPassTxHash((p) => ({ ...p, [f.id]: e.target.value }))}
-              placeholder="abc123def456…"
-              className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-xs font-mono text-white placeholder-gray-600 focus:border-hydra-500 focus:outline-none"
-            />
-            <button
-              onClick={() => handleApprove(f.id)}
-              disabled={actionId === f.id}
-              className="w-full rounded-lg bg-green-700 py-2 text-sm font-semibold text-white hover:bg-green-600 disabled:opacity-50"
-            >
-              {actionId === f.id ? "Procesando…" : "Aprobar"}
-            </button>
-          </div>
+          <button
+            onClick={() => handleApprove(f.id)}
+            disabled={actionId === f.id}
+            className="w-full rounded-lg bg-green-700 py-2 text-sm font-semibold text-white hover:bg-green-600 disabled:opacity-50"
+          >
+            {actionId === f.id ? "Minteando FarmerPass…" : "Aprobar & Mintear FarmerPass"}
+          </button>
 
           {/* Reject */}
           <div className="space-y-2">

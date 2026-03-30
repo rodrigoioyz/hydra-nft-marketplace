@@ -66,6 +66,44 @@ export interface CropMint {
   createdAt:     string;
 }
 
+export interface CropWalletAsset {
+  policyId:     string;
+  assetNameHex: string;
+  assetName:    string;
+  quantity:     number;
+}
+
+export interface EscrowInfo extends Listing {
+  escrowRef: string | null;
+  inHead:    boolean;
+}
+
+export interface WalletUtxo {
+  ref:      string;
+  lovelace: number;
+  assets:   Record<string, string | number>;
+}
+
+export interface WalletBalance {
+  address:      string;
+  utxos:        WalletUtxo[];
+  totalLovelace: number;
+  headStatus?:  string;
+}
+
+export interface FarmerStats {
+  activeListings:       number;
+  totalListed:          number;
+  totalSold:            number;
+  totalRevenueLovelace: string;
+  recentSales: Array<{
+    listingId:     string;
+    assetName:     string;
+    priceLovelace: string;
+    confirmedAt:   string | null;
+  }>;
+}
+
 export interface ListingsResponse {
   listings: Listing[];
   total:    number;
@@ -125,10 +163,12 @@ export const api = {
     policyId:      string;
     assetName:     string;
     priceLovelace: string;
-  }) => post<{ listingId: string; status: string; escrowTxCbor: string; txId: string; message: string }>("/listings", body),
+  }) => post<{ listingId: string; status: string; escrowTxCbor: string; txId: string; message: string; needsPartialSign?: boolean }>("/listings", body),
 
   escrowConfirm: (id: string, body: { signedTxCbor: string; txId: string }) =>
     post<{ submissionId: string; status: string }>(`/listings/${id}/escrow-confirm`, body),
+  rebuildEscrow: (id: string) =>
+    post<{ escrowTxCbor: string; txId: string }>(`/listings/${id}/rebuild-escrow`, {}),
 
   buy: (id: string, body: { requestId: string; buyerAddress: string }) =>
     post<{ saleId: string; submissionId: string; hydraTxId: string; status: string; message: string }>(
@@ -147,11 +187,52 @@ export const api = {
   farmerRegister: (body: { walletAddress: string; companyName: string; identityHash: string }) =>
     post<FarmerRegistration>("/farmers/register", body),
 
-  cropMint: (body: { farmerAddress: string; cropName: string; assetNameHex: string; quantity: number; priceLovelace: number }) =>
-    post<CropMint>("/crops/mint", body),
+  cropWalletAssets: (address: string) =>
+    get<CropWalletAsset[]>(`/crops/wallet/${address}`),
+
+  cropBuildCommitTx: (body: { address: string; assetNameHex: string }) =>
+    post<{ utxoRef: string; unsignedTxCbor: string; txId: string }>("/crops/build-commit-tx", body),
+
+  cropSubmitCommitTx: (body: { signedTxCbor: string }) =>
+    post<{ ok: boolean; txHash: string }>("/crops/submit-commit-tx", body),
+
+  cropBuildMintTx: (body: { farmerAddress: string; cropName: string; assetNameHex: string; quantity: number; priceLovelace: number }) =>
+    post<{ mintId: string; unsignedTxCbor: string; txId: string; policyId: string }>("/crops/build-mint-tx", body),
+
+  cropSubmitMintTx: (body: { mintId: string; signedTxCbor: string }) =>
+    post<{ ok: boolean; txHash: string; status: string }>("/crops/submit-mint-tx", body),
 
   cropList: (address: string) =>
     get<CropMint[]>(`/crops/${address}`),
+
+  myEscrows: (address: string) =>
+    get<{ escrows: EscrowInfo[] }>(`/listings/my-escrows/${encodeURIComponent(address)}`),
+
+  walletHeadBalance: (address: string) =>
+    get<WalletBalance>(`/wallet/balance/${encodeURIComponent(address)}`),
+
+  walletL1Balance: (address: string) =>
+    get<WalletBalance>(`/wallet/l1-balance/${encodeURIComponent(address)}`),
+
+  farmerStats: (address: string) =>
+    get<FarmerStats>(`/farmers/stats/${encodeURIComponent(address)}`),
+
+  // Build a Hydra incremental commit tx for the given L1 UTxO.
+  // Returns commitTxCbor — user signs it and submits via submitL1Tx.
+  deposit: (body: {
+    address:  string;
+    utxoRef:  string;
+    lovelace: number;
+    assets?:  Record<string, Record<string, number>>;
+  }) => post<{ commitTxCbor: string; type: string; message: string }>("/wallet/deposit", body),
+
+  // Submit a signed tx CBOR to L1 via Blockfrost.
+  submitL1Tx: (signedTxCbor: string) =>
+    post<{ ok: boolean; txHash: string }>("/wallet/submit-l1-tx", { signedTxCbor }),
+
+  // Request incremental decommit for an in-Head UTxO.
+  withdraw: (utxoRef: string) =>
+    post<{ ok: boolean; utxoRef: string; message: string }>("/wallet/withdraw", { utxoRef }),
 };
 
 // Format lovelace as ADA string

@@ -49,6 +49,9 @@ export function createHeadRouter(pool: Pool, hydra: HydraClient): Router {
 
   // POST /api/head/collect — send Collect command (Head must be Initializing)
   // Waits for HeadIsOpen and records the session in DB.
+  // Note: in Hydra v1.2.0 the WS "Collect" command is rejected (APIInvalidInput)
+  // but CollectCom fires automatically after all classic commit txs are confirmed on L1.
+  // awaitHeadOpen catches the HeadIsOpen event however it arrives.
   router.post("/collect", asyncHandler(async (_req, res) => {
     const status = hydra.getHeadStatus();
     if (status !== "Initializing") {

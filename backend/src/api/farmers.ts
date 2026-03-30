@@ -77,6 +77,55 @@ export function createFarmersRouter(pool: Pool): Router {
     res.json(toApiFarmer(row));
   }));
 
+  // ── GET /farmers/stats/:address ─────────────────────────────────────────────
+  router.get("/stats/:address", asyncHandler(async (req, res) => {
+    const address = req.params["address"] as string;
+
+    const { rows: [stats] } = await pool.query<{
+      active_listings:        string;
+      total_listed:           string;
+      total_sold:             string;
+      total_revenue_lovelace: string;
+    }>(
+      `SELECT
+         COUNT(*)                                  FILTER (WHERE status = 'active')   AS active_listings,
+         COUNT(*)                                                                      AS total_listed,
+         COUNT(*)                                  FILTER (WHERE status = 'sold')     AS total_sold,
+         COALESCE(SUM(price_lovelace::bigint)      FILTER (WHERE status = 'sold'), 0) AS total_revenue_lovelace
+       FROM listings
+       WHERE seller_address = $1`,
+      [address]
+    );
+
+    const { rows: recentSales } = await pool.query<{
+      listing_id:   string;
+      asset_name:   string;
+      price_lovelace: string;
+      confirmed_at: Date | null;
+    }>(
+      `SELECT l.id AS listing_id, l.asset_name, l.price_lovelace, s.confirmed_at
+       FROM listings l
+       JOIN sales s ON s.listing_id = l.id
+       WHERE l.seller_address = $1 AND s.status = 'confirmed'
+       ORDER BY s.confirmed_at DESC NULLS LAST
+       LIMIT 5`,
+      [address]
+    );
+
+    res.json({
+      activeListings:       Number(stats?.active_listings       ?? 0),
+      totalListed:          Number(stats?.total_listed          ?? 0),
+      totalSold:            Number(stats?.total_sold            ?? 0),
+      totalRevenueLovelace: String(stats?.total_revenue_lovelace ?? "0"),
+      recentSales: recentSales.map((r) => ({
+        listingId:     r.listing_id,
+        assetName:     r.asset_name,
+        priceLovelace: r.price_lovelace,
+        confirmedAt:   r.confirmed_at,
+      })),
+    });
+  }));
+
   return router;
 }
 

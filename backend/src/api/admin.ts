@@ -12,6 +12,9 @@ import type { Pool } from "pg";
 import type { HydraClient } from "../hydra/client";
 import { asyncHandler, apiError } from "./middleware";
 import { FarmerRepo } from "../db/farmerRepo";
+import { mintFarmerPassL1 } from "../tx/l1mint";
+import { getPaymentKeyHash } from "../utils/address";
+import { config } from "../config";
 
 export function createAdminRouter(pool: Pool, hydra: HydraClient): Router {
   const router     = Router();
@@ -148,20 +151,44 @@ export function createAdminRouter(pool: Pool, hydra: HydraClient): Router {
   }));
 
   // POST /api/admin/farmers/:id/approve
-  // Body: { reviewerAddress: string, farmerPassTxHash: string }
+  // Mints FarmerPass NFT on L1 automatically, then marks registration approved.
+  // Body: {} (empty — operator identity comes from server config)
   router.post("/farmers/:id/approve", asyncHandler(async (req, res) => {
-    const { reviewerAddress, farmerPassTxHash } = req.body ?? {};
-    if (!reviewerAddress || typeof reviewerAddress !== "string") {
-      return apiError(res, 400, "MISSING_FIELD", "reviewerAddress is required");
-    }
-    if (!farmerPassTxHash || typeof farmerPassTxHash !== "string") {
-      return apiError(res, 400, "MISSING_FIELD", "farmerPassTxHash is required");
-    }
-    const row = await farmerRepo.approve(req.params["id"] as string, reviewerAddress, farmerPassTxHash);
-    if (!row) {
+    const id = req.params["id"] as string;
+
+    const pending = await farmerRepo.findById(id);
+    if (!pending || pending.status !== "pending") {
       return apiError(res, 404, "NOT_FOUND", "Registration not found or not in pending state");
     }
-    res.json({ ok: true, walletAddress: row.wallet_address, status: row.status });
+
+    // Derive farmer PKH from their wallet address
+    const farmerPkh = getPaymentKeyHash(config.cardanoCliPath, pending.wallet_address);
+
+    // Mint FarmerPass NFT on L1 (operator-signed, fully automatic)
+    const txHash = mintFarmerPassL1({
+      farmerAddress: pending.wallet_address,
+      farmerPkh,
+      companyName:   pending.company_name,
+      identityHash:  pending.identity_hash,
+    });
+
+    const row = await farmerRepo.approve(id, config.operatorAddress, txHash);
+    if (!row) return apiError(res, 500, "DB_ERROR", "Failed to update registration after mint");
+
+    // Notify SSE clients so the farmer sees the approval in real-time
+    hydra.emit("event", {
+      tag:           "FarmerApproved",
+      walletAddress: row.wallet_address,
+      seq:           0,
+      timestamp:     new Date().toISOString(),
+    });
+
+    res.json({
+      ok:                true,
+      walletAddress:     row.wallet_address,
+      status:            row.status,
+      farmerPassTxHash:  txHash,
+    });
   }));
 
   // POST /api/admin/farmers/:id/reject

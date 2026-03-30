@@ -52,6 +52,14 @@ export class FarmerRepo {
     return rows[0];
   }
 
+  async findById(id: string): Promise<FarmerRow | null> {
+    const { rows } = await this.pool.query<FarmerRow>(
+      "SELECT * FROM farmer_registrations WHERE id = $1",
+      [id]
+    );
+    return rows[0] ?? null;
+  }
+
   async findByAddress(walletAddress: string): Promise<FarmerRow | null> {
     const { rows } = await this.pool.query<FarmerRow>(
       "SELECT * FROM farmer_registrations WHERE wallet_address = $1",

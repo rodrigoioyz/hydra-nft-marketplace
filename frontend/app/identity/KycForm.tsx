@@ -41,6 +41,21 @@ export function KycForm() {
       .finally(() => setLoadingStatus(false));
   }, [address]);
 
+  // SSE: re-fetch status when FarmerApproved event fires for this address
+  useEffect(() => {
+    if (!address) return;
+    const es = new EventSource("/api/events");
+    es.addEventListener("message", (e: MessageEvent) => {
+      try {
+        const msg = JSON.parse(e.data as string) as { type: string; walletAddress?: string };
+        if (msg.type === "FarmerApproved" && msg.walletAddress === address) {
+          api.farmerStatus(address).then(setRegistration).catch(() => {});
+        }
+      } catch { /* ignore */ }
+    });
+    return () => es.close();
+  }, [address]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null); setSuccess(null);
@@ -96,9 +111,14 @@ export function KycForm() {
             </div>
           )}
           {registration.status === "pending" && (
-            <p className="text-xs text-gray-500">
-              Tu solicitud está en revisión. El operador verificará los datos y minteará tu FarmerPass NFT en la blockchain.
-            </p>
+            <div className="space-y-2">
+              <p className="text-xs text-gray-500">
+                Tu solicitud está en revisión. Recibirás la aprobación en esta misma pantalla — no hace falta que recargues.
+              </p>
+              <div className="rounded-lg bg-gray-800 px-3 py-2 text-xs text-gray-400">
+                Tiempo estimado de revisión: <strong className="text-white">24–48 horas hábiles</strong>
+              </div>
+            </div>
           )}
           {registration.status === "rejected" && (
             <button

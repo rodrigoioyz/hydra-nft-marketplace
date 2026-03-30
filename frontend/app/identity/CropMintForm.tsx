@@ -21,7 +21,7 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export function CropMintForm() {
-  const { address } = useWallet();
+  const { address, signTx } = useWallet();
 
   const [registration, setRegistration] = useState<FarmerRegistration | null | "loading">("loading");
   const [crops,        setCrops]        = useState<CropMint[]>([]);
@@ -61,14 +61,22 @@ export function CropMintForm() {
 
     setLoading(true);
     try {
-      await api.cropMint({
+      // Step 1: backend builds unsigned L1 tx
+      const { mintId, unsignedTxCbor } = await api.cropBuildMintTx({
         farmerAddress: address,
         cropName:      cropName.trim(),
         assetNameHex:  toAssetNameHex(cropName),
         quantity:      qty,
         priceLovelace: pl,
       });
-      setSuccess(`✓ Lote de ${cropName} registrado. Listalo en Vender para publicarlo.`);
+
+      // Step 2: farmer signs with browser wallet
+      const signedTxCbor = await signTx(unsignedTxCbor);
+
+      // Step 3: backend submits to L1
+      await api.cropSubmitMintTx({ mintId, signedTxCbor });
+
+      setSuccess(`✓ Lote de ${cropName} minteado en L1. Listalo en Vender para publicarlo.`);
       setCropName(""); setQuantity(""); setPriceAda("");
       refreshCrops();
     } catch (err) {
@@ -146,7 +154,7 @@ export function CropMintForm() {
           type="submit" disabled={loading}
           className="w-full rounded-lg bg-hydra-600 py-3 text-sm font-semibold text-white hover:bg-hydra-500 disabled:opacity-50"
         >
-          {loading ? "Registrando…" : "Registrar lote de cultivo"}
+          {loading ? "Minteando…" : "Mintear lote en L1"}
         </button>
       </form>
 

@@ -338,6 +338,7 @@ export class CardanoCliBuilder {
         ` --tx-out-inline-datum-file ${datumFile}` +
         (sellerChange > 0n ? ` --tx-out ${opts.sellerAddress}+${sellerChange}` : "") +
         (hasFeeInput && operatorChange > 0n ? ` --tx-out ${opts.feeChangeAddress}+${operatorChange}` : "") +
+        ` --required-signer-hash ${opts.sellerVkh}` +
         ` --fee ${opts.fee}` +
         ` --out-file ${unsigned}`
       );
@@ -357,6 +358,122 @@ export class CardanoCliBuilder {
         txId = txIdRaw;
       }
 
+      return { txId, cborHex: unsignedTx.cborHex, type: unsignedTx.type };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // ── Blueprint tx (for Hydra /commit) ─────────────────────────────────────
+  // A simple self-transfer that Hydra wraps into a deposit commit tx.
+  // Returns the tx JSON object (not BuiltTx) since Hydra expects the raw tx body.
+
+  buildBlueprintTx(opts: {
+    inputRef:      string;   // UTxO to commit
+    inputLovelace: bigint;
+    outputAddress: string;   // same as owner address
+    fee:           bigint;
+  }): { type: string; description: string; cborHex: string } {
+    const dir = this.tmp();
+    try {
+      const unsigned = join(dir, "tx.unsigned.json");
+      const out = opts.inputLovelace - opts.fee;
+      if (out <= 0n) throw new Error("Blueprint UTxO too small");
+
+      this.cli(
+        `latest transaction build-raw` +
+        ` --tx-in ${opts.inputRef}` +
+        ` --tx-out ${opts.outputAddress}+${out}` +
+        ` --fee ${opts.fee}` +
+        ` --out-file ${unsigned}`
+      );
+
+      return JSON.parse(readFileSync(unsigned, "utf8")) as {
+        type: string;
+        description: string;
+        cborHex: string;
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // ── Buy tx — unsigned (for buyer to sign) ─────────────────────────────────
+  // Returns unsigned CBOR. Buyer adds their witness; operator adds collateral
+  // witness via addOperatorWitness before submitting to Hydra.
+
+  buildBuyTxUnsigned(opts: {
+    escrowRef:          string;
+    escrowLovelace:     bigint;
+    escrowTokenQty:     bigint;
+    buyerInputRef:      string;   // buyer's in-Head UTxO
+    buyerInputLovelace: bigint;
+    buyerVkh:           string;   // required signer hash
+    collateralRef:      string;   // operator's pure-ADA UTxO
+    changeAddress:      string;   // buyer gets change back
+    sellerAddress:      string;
+    priceLovelace:      bigint;
+    buyerAddress:       string;
+    unit:               string;
+    minLovelace:        bigint;
+    scriptCbor:         string;
+    fee:                bigint;
+  }): BuiltTx {
+    const dir = this.tmp();
+    try {
+      const unsigned     = join(dir, "tx.unsigned.json");
+      const scriptFile   = join(dir, "script.plutus");
+      const redeemerFile = join(dir, "redeemer.json");
+
+      writeFileSync(scriptFile, JSON.stringify({
+        type: "PlutusScriptV3",
+        description: "Listing Validator",
+        cborHex: opts.scriptCbor,
+      }));
+      // Buy redeemer: Constr 0 [{ bytes: buyerVkh }]
+      writeFileSync(redeemerFile, JSON.stringify({
+        constructor: 0,
+        fields: [{ bytes: opts.buyerVkh }],
+      }));
+
+      const policyId  = opts.unit.slice(0, 56);
+      const assetName = opts.unit.slice(56);
+      const nftValue  = `${opts.minLovelace} + ${opts.escrowTokenQty} ${policyId}.${assetName}`;
+      const change    = opts.escrowLovelace + opts.buyerInputLovelace
+        - opts.priceLovelace - opts.minLovelace - opts.fee;
+      if (change < 0n) throw new Error(
+        `Insufficient funds for buy tx: have ${opts.escrowLovelace + opts.buyerInputLovelace} ` +
+        `need ${opts.priceLovelace + opts.minLovelace + opts.fee}`
+      );
+
+      const protocolParamsFile = process.env.PROTOCOL_PARAMS_PATH
+        ?? "/home/rodrigo/hydra-nft-marketplace/hydra/config/protocol-parameters-zero-fees.json";
+
+      this.cli(
+        `latest transaction build-raw` +
+        ` --tx-in ${opts.escrowRef}` +
+        ` --tx-in-script-file ${scriptFile}` +
+        ` --tx-in-inline-datum-present` +
+        ` --tx-in-redeemer-file ${redeemerFile}` +
+        ` --tx-in-execution-units "(700000000,3000000)"` +
+        ` --tx-in ${opts.buyerInputRef}` +
+        ` --tx-in-collateral ${opts.collateralRef}` +
+        ` --tx-out ${opts.sellerAddress}+${opts.priceLovelace}` +
+        ` --tx-out "${opts.buyerAddress}+${nftValue}"` +
+        (change > 0n ? ` --tx-out ${opts.changeAddress}+${change}` : "") +
+        ` --required-signer-hash ${opts.buyerVkh}` +
+        ` --fee ${opts.fee}` +
+        ` --protocol-params-file ${protocolParamsFile}` +
+        ` --out-file ${unsigned}`
+      );
+
+      const unsignedTx = JSON.parse(readFileSync(unsigned, "utf8")) as {
+        cborHex: string; type: string;
+      };
+      const txIdRaw = this.cli(`latest transaction txid --tx-file ${unsigned}`).trim();
+      let txId: string;
+      try { txId = (JSON.parse(txIdRaw) as { txhash: string }).txhash; }
+      catch { txId = txIdRaw; }
       return { txId, cborHex: unsignedTx.cborHex, type: unsignedTx.type };
     } finally {
       rmSync(dir, { recursive: true, force: true });

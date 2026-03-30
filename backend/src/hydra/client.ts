@@ -67,8 +67,10 @@ export class HydraClient extends EventEmitter {
     });
 
     this.ws.on("error", (err) => {
+      // Log only — do NOT re-emit as "error" event. Node.js throws unhandled
+      // "error" events as exceptions, crashing the process. Reconnect is
+      // handled by the "close" event that fires immediately after.
       console.error("[HydraClient] WebSocket error:", err.message);
-      this.emit("error", err);
     });
   }
 
@@ -175,11 +177,11 @@ export class HydraClient extends EventEmitter {
     switch (event.tag) {
       case "TxValid": {
         const e = event as TxValidEvent;
-        return `txId=${e.transaction?.id ?? "?"}`;
+        return `txId=${e.transactionId ?? "?"}`;
       }
       case "TxInvalid": {
         const e = event as TxInvalidEvent;
-        return `txId=${e.transaction?.id ?? "?"} reason=${e.validationError?.reason ?? "?"}`;
+        return `txId=${e.transaction?.txId ?? "?"} reason=${e.validationError?.reason ?? "?"}`;
       }
       case "SnapshotConfirmed": {
         const e = event as SnapshotConfirmedEvent;
@@ -231,10 +233,10 @@ export class HydraClient extends EventEmitter {
       }, timeoutMs);
 
       const onValid = (event: TxValidEvent) => {
-        if (event.transaction?.id === txId) { cleanup(); resolve(event); }
+        if (event.transactionId === txId) { cleanup(); resolve(event); }
       };
       const onInvalid = (event: TxInvalidEvent) => {
-        if (event.transaction?.id === txId) {
+        if (event.transaction?.txId === txId) {
           cleanup();
           reject(new Error(`TxInvalid: ${event.validationError?.reason ?? "unknown"}`));
         }
